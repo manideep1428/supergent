@@ -1,6 +1,17 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
+  "globalEnv": [
+    "POLAR_ACCESS_TOKEN",
+    "POLAR_PRODUCT_ID_PRO_ANNUAL",
+    "POLAR_PRODUCT_ID_PRO_MONTHLY",
+    "POLAR_PRODUCT_ID_TRIAL",
+    "POLAR_PRODUCT_ID_UNLIMITED_ANNUAL",
+    "POLAR_PRODUCT_ID_UNLIMITED_MONTHLY",
+    "POLAR_RETURN_URL",
+    "POLAR_SERVER",
+    "POLAR_SUCCESS_URL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
