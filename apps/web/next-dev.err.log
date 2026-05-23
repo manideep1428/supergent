@@ -1,0 +1,8 @@
+⨯ Unable to acquire lock at C:\Users\saima\OneDrive\Desktop\New folder\super\emergent\apps\web\.next\dev\lock, is another instance of next dev running?
+npm error Lifecycle script `dev` failed with error:
+npm error code 1
+npm error path C:\Users\saima\OneDrive\Desktop\New folder\super\emergent\apps\web
+npm error workspace web@0.0.1
+npm error location C:\Users\saima\OneDrive\Desktop\New folder\super\emergent\apps\web
+npm error command failed
+npm error command C:\Windows\system32\cmd.exe /d /s /c next dev --turbopack --port 3001
