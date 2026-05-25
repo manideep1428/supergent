@@ -1,10 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { CheckIcon, GlobeIcon, MicIcon } from "lucide-react"
 import { nanoid } from "nanoid"
-import { toast } from "sonner"
 import {
     PromptInput,
     PromptInputActionAddAttachments,
@@ -178,6 +177,13 @@ const models = [
     },
 ]
 
+const PENDING_HOME_PROMPT_KEY = "supergent_pending_home_prompt"
+
+type PendingHomePrompt = {
+    text: string
+    modelId: string
+}
+
 const PromptInputAttachmentsDisplay = () => {
     const attachments = usePromptInputAttachments()
 
@@ -201,7 +207,7 @@ const PromptInputAttachmentsDisplay = () => {
     )
 }
 
-export function HomeChatBox() {
+export function HomeChatBox({ isSignedIn }: { isSignedIn: boolean }) {
     const router = useRouter()
     const [model, setModel] = useState<string>(models[0]?.id ?? "gpt-5.5")
     const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
@@ -209,8 +215,57 @@ export function HomeChatBox() {
     const [useWebSearch, setUseWebSearch] = useState<boolean>(false)
     const [useMicrophone, setUseMicrophone] = useState<boolean>(false)
     const [status, setStatus] = useState<"submitted" | "streaming" | "ready" | "error">("ready")
+    const resumedPendingPromptRef = useRef(false)
 
     const selectedModelData = models.find(m => m.id === model)
+
+    const startChat = useCallback(
+        (initialText: string, selectedModel: string) => {
+            const chatId = nanoid()
+
+            window.sessionStorage.setItem(
+                `pending_chat_${chatId}`,
+                JSON.stringify({
+                    text: initialText,
+                    modelId: selectedModel,
+                }),
+            )
+
+            router.push(`/chat/${chatId}`)
+        },
+        [router],
+    )
+
+    useEffect(() => {
+        if (!isSignedIn || resumedPendingPromptRef.current) {
+            return
+        }
+
+        resumedPendingPromptRef.current = true
+
+        const pendingRaw = window.localStorage.getItem(PENDING_HOME_PROMPT_KEY)
+        if (!pendingRaw) {
+            return
+        }
+
+        window.localStorage.removeItem(PENDING_HOME_PROMPT_KEY)
+
+        try {
+            const pending = JSON.parse(pendingRaw) as Partial<PendingHomePrompt>
+            const pendingText = pending.text?.trim()
+
+            if (pending.modelId) {
+                setModel(pending.modelId)
+            }
+
+            if (pendingText) {
+                setStatus("submitted")
+                startChat(pendingText, pending.modelId || model)
+            }
+        } catch (error) {
+            console.error("Could not restore pending prompt", error)
+        }
+    }, [isSignedIn, model, startChat])
 
     const handleSubmit = (message: PromptInputMessage) => {
         const hasText = Boolean(message.text)
@@ -222,20 +277,53 @@ export function HomeChatBox() {
 
         setStatus("submitted")
 
-        // In a real app, you might save the initial message to a database,
-        // create a new chat session, and then redirect.
-        const chatId = nanoid()
         const initialText = message.text || "Sent with attachments"
 
-        window.sessionStorage.setItem(
-            `pending_chat_${chatId}`,
-            JSON.stringify({
-                text: initialText,
-                modelId: model,
-            }),
-        )
+        if (!isSignedIn) {
+            window.localStorage.setItem(
+                PENDING_HOME_PROMPT_KEY,
+                JSON.stringify({
+                    text: initialText,
+                    modelId: model,
+                }),
+            )
+            window.location.assign("/login?returnTo=/")
+            return
+        }
 
-        router.push(`/chat/${chatId}`)
+        startChat(initialText, model)
+    }
+
+    const handleSignIn = () => {
+        const trimmedText = text.trim()
+
+        if (trimmedText) {
+            window.localStorage.setItem(
+                PENDING_HOME_PROMPT_KEY,
+                JSON.stringify({
+                    text: trimmedText,
+                    modelId: model,
+                }),
+            )
+        }
+
+        window.location.assign("/login?returnTo=/")
+    }
+
+    const handleSignUp = () => {
+        const trimmedText = text.trim()
+
+        if (trimmedText) {
+            window.localStorage.setItem(
+                PENDING_HOME_PROMPT_KEY,
+                JSON.stringify({
+                    text: trimmedText,
+                    modelId: model,
+                }),
+            )
+        }
+
+        window.location.assign("/login?screen_hint=sign-up&returnTo=/")
     }
 
     return (
@@ -336,6 +424,26 @@ export function HomeChatBox() {
                             />
                         </PromptInputFooter>
                     </PromptInput>
+                    {!isSignedIn ? (
+                        <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-sm">
+                            <button
+                                className="font-medium text-primary underline-offset-4 hover:underline"
+                                onClick={handleSignIn}
+                                type="button"
+                            >
+                                Sign in
+                            </button>
+                            <span className="text-muted-foreground">or</span>
+                            <button
+                                className="font-medium text-primary underline-offset-4 hover:underline"
+                                onClick={handleSignUp}
+                                type="button"
+                            >
+                                create an account
+                            </button>
+                            <span className="text-muted-foreground">to save and run your prompt.</span>
+                        </div>
+                    ) : null}
                 </div>
             </div>
         </div>

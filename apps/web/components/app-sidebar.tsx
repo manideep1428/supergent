@@ -5,6 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 import { NavUser } from "@/components/nav-user"
+import { Button } from "@workspace/ui/components/button"
 import {
   Sidebar,
   SidebarContent,
@@ -31,9 +32,9 @@ import {
 import { cn } from "@workspace/ui/lib/utils"
 
 const fallbackUser = {
-  name: "shadcn",
-  email: "m@example.com",
-  avatar: "/avatars/shadcn.jpg",
+  name: "Guest",
+  email: "",
+  avatar: "",
 }
 
 type Project = {
@@ -64,19 +65,27 @@ function isActive(pathname: string, url: string) {
 }
 
 export function AppSidebar({
+  isSignedIn,
   user,
   ...props
-}: React.ComponentProps<typeof Sidebar> & { user?: SidebarUser }) {
+}: React.ComponentProps<typeof Sidebar> & { isSignedIn?: boolean; user?: SidebarUser }) {
   const pathname = usePathname() ?? "/"
+  const signedIn = isSignedIn ?? Boolean(user)
   const sidebarUser = user ?? fallbackUser
 
   const [query, setQuery] = React.useState("")
   const [recent, setRecent] = React.useState<Project[]>([])
-  const [recentLoading, setRecentLoading] = React.useState(true)
+  const [recentLoading, setRecentLoading] = React.useState(signedIn)
   const [favorites, setFavorites] = React.useState<Favorite[]>([])
-  const [favoritesLoading, setFavoritesLoading] = React.useState(true)
+  const [favoritesLoading, setFavoritesLoading] = React.useState(signedIn)
 
   React.useEffect(() => {
+    if (!signedIn) {
+      setRecent([])
+      setRecentLoading(false)
+      return
+    }
+
     let cancelled = false
     const loadRecent = async () => {
       try {
@@ -94,9 +103,15 @@ export function AppSidebar({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [signedIn])
 
   const loadFavorites = React.useCallback(async () => {
+    if (!signedIn) {
+      setFavorites([])
+      setFavoritesLoading(false)
+      return
+    }
+
     setFavoritesLoading(true)
     try {
       const response = await fetch("/api/favorites?limit=20", { cache: "no-store" })
@@ -108,7 +123,7 @@ export function AppSidebar({
     } finally {
       setFavoritesLoading(false)
     }
-  }, [])
+  }, [signedIn])
 
   React.useEffect(() => {
     loadFavorites()
@@ -140,7 +155,7 @@ export function AppSidebar({
                   <TerminalIcon className="size-4" />
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">Emergent</span>
+                  <span className="truncate font-medium">Supergent</span>
                   <span className="truncate text-xs text-muted-foreground">Personal</span>
                 </div>
               </Link>
@@ -171,7 +186,13 @@ export function AppSidebar({
                     isActive={isActive(pathname, item.url)}
                     tooltip={item.title}
                   >
-                    <Link href={item.url}>
+                    <Link
+                      href={
+                        signedIn || item.url === "/"
+                          ? item.url
+                          : `/login?returnTo=${encodeURIComponent(item.url)}`
+                      }
+                    >
                       {item.icon}
                       <span>{item.title}</span>
                     </Link>
@@ -192,7 +213,9 @@ export function AppSidebar({
               <div className="px-2 py-1 text-[11px] text-muted-foreground">Loading…</div>
             ) : favorites.length === 0 ? (
               <div className="rounded-md border border-dashed border-sidebar-border/70 px-3 py-3 text-[11px] leading-snug text-muted-foreground">
-                Pin chats from the Projects page to see them here.
+                {signedIn
+                  ? "Pin chats from the Projects page to see them here."
+                  : "Sign in to see favorite chats."}
               </div>
             ) : (
               <SidebarMenu>
@@ -226,7 +249,7 @@ export function AppSidebar({
             </span>
             <Link
               className="flex items-center gap-0.5 text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
-              href="/projects"
+              href={signedIn ? "/projects" : "/login?returnTo=/projects"}
             >
               All
               <ChevronRightIcon className="size-3" />
@@ -238,7 +261,7 @@ export function AppSidebar({
                 <li className="px-2 py-1 text-[11px] text-muted-foreground">Loading…</li>
               ) : filteredRecent.length === 0 ? (
                 <li className="px-2 py-1 text-[11px] text-muted-foreground">
-                  {query ? "No matches." : "No chats yet."}
+                  {!signedIn ? "Sign in to see recent chats." : query ? "No matches." : "No chats yet."}
                 </li>
               ) : (
                 filteredRecent.map((project) => {
@@ -268,7 +291,18 @@ export function AppSidebar({
       </SidebarContent>
 
       <SidebarFooter>
-        <NavUser user={sidebarUser} />
+        {signedIn ? (
+          <NavUser user={sidebarUser} />
+        ) : (
+          <div className="grid gap-2 p-1">
+            <Button asChild size="sm">
+              <Link href="/login?returnTo=/">Sign in</Link>
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/login?screen_hint=sign-up&returnTo=/">Create account</Link>
+            </Button>
+          </div>
+        )}
       </SidebarFooter>
     </Sidebar>
   )

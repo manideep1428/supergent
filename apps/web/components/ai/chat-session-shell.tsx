@@ -462,9 +462,9 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
       wakeSandbox()
       resetIdleTimer()
     }
-    window.addEventListener("emergent:chat-message-sent", onChatActivity)
+    window.addEventListener("supergent:chat-message-sent", onChatActivity)
     return () => {
-      window.removeEventListener("emergent:chat-message-sent", onChatActivity)
+      window.removeEventListener("supergent:chat-message-sent", onChatActivity)
     }
   }, [resetIdleTimer, wakeSandbox])
 
@@ -622,20 +622,20 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
       <header className="flex h-11 shrink-0 items-center justify-between border-white/10 border-b bg-black px-3 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Link className="flex shrink-0 items-center gap-2" href="/">
-            <span className="text-sm font-semibold tracking-tight">Emergent</span>
+            <span className="text-sm font-semibold tracking-tight">Supergent</span>
           </Link>
-        </div>
 
-        <div className="hidden min-w-0 items-center gap-2 text-xs md:flex">
-          <span className="inline-flex size-4 items-center justify-center rounded-full border border-dashed border-zinc-500">
-            <SparklesIcon className="size-2.5 text-zinc-400" />
-          </span>
-          <span className="text-zinc-400">Drafts</span>
-          <span className="text-zinc-700">/</span>
-          <button className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-zinc-200 transition hover:bg-white/10">
-            <span className="max-w-[28vw] truncate">{app?.title || `Project ${projectId}`}</span>
-            <ChevronDownIcon className="size-3.5 text-zinc-500" />
-          </button>
+          <div className="hidden min-w-0 items-center gap-2 text-xs md:flex">
+            <span className="inline-flex size-4 items-center justify-center rounded-full border border-dashed border-zinc-500">
+              <SparklesIcon className="size-2.5 text-zinc-400" />
+            </span>
+            <span className="text-zinc-400">Drafts</span>
+            <span className="text-zinc-700">/</span>
+            <button className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-zinc-200 transition hover:bg-white/10">
+              <span className="max-w-[28vw] truncate">{app?.title || `Project ${projectId}`}</span>
+              <ChevronDownIcon className="size-3.5 text-zinc-500" />
+            </button>
+          </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
