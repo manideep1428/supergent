@@ -868,7 +868,13 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
             </Button>
           </div>
           <div className="flex min-h-0 flex-1 flex-col [&_[data-slot=input-group]]:border-white/10 [&_[data-slot=input-group]]:bg-zinc-900 [&_[data-slot=input-group]]:text-white [&_textarea]:min-h-12 [&_*]:scrollbar-hide">
-            <ChatbotDemo chatId={projectId} userId={user.id} />
+            <ChatbotDemo
+              chatId={projectId}
+              userId={user.id}
+              sandboxStatus={sandboxStatus}
+              waking={waking}
+              onReconnectSandbox={wakeSandbox}
+            />
           </div>
         </aside>
 

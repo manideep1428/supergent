@@ -267,14 +267,18 @@ async function saveRuntimeUpdate({
   sandboxId,
   previewUrl,
   generatedFiles,
+  files,
   status,
+  overwriteGeneratedFiles,
 }: {
   chatId: string;
   userId: string;
   sandboxId?: string;
   previewUrl?: string;
   generatedFiles?: string[];
+  files?: { path: string; content: string }[];
   status?: "creating" | "ready" | "error";
+  overwriteGeneratedFiles?: boolean;
 }) {
   const convex = getConvexClient();
   if (!convex) {
@@ -289,7 +293,16 @@ async function saveRuntimeUpdate({
       previewUrl: previewUrl ?? null,
       generatedFiles,
       status,
+      overwriteGeneratedFiles,
     });
+
+    if (files && files.length > 0) {
+      await convex.mutation(api.chats.saveFilesBatch, {
+        chatId,
+        userId,
+        files,
+      });
+    }
   } catch (error) {
     console.error("Failed to save sandbox runtime to Convex", error);
   }
@@ -570,7 +583,9 @@ export async function POST(req: Request) {
           sandboxId: update.sandboxId,
           previewUrl: update.previewUrl,
           generatedFiles: update.generatedFiles,
+          files: update.files,
           status: update.status,
+          overwriteGeneratedFiles: update.overwriteGeneratedFiles,
         }),
       onToolEvent: (event) => {
         writeEvent(event);

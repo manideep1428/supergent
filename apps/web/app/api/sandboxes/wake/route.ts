@@ -1,7 +1,7 @@
 import { withAuth } from "@workos-inc/authkit-nextjs";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "backend/convex/_generated/api";
-import { resumeSandboxForChat } from "@/lib/sandbox-tools";
+import { resumeSandboxForChat, syncSandboxFilesToConvex } from "@/lib/sandbox-tools";
 
 function getConvexClient() {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL;
@@ -83,6 +83,113 @@ export async function POST(req: Request) {
       ports: [port],
     });
 
+    let isFresh = source === "fresh";
+    if (!isFresh) {
+      try {
+        await sandbox.fs.readFile("package.json");
+      } catch {
+        isFresh = true;
+      }
+    }
+
+    if (isFresh) {
+      console.log(`[wake] Sandbox is empty/fresh. Initializing starter repo in ${sandbox.sandboxId}...`);
+      const cloneCmd = await sandbox.runCommand({
+        cmd: "sh",
+        args: [
+          "-c",
+          "rm -rf * && git clone https://github.com/manideep1428/supergent-starter .",
+        ],
+      });
+      const cloneResult = await cloneCmd.wait();
+      if (cloneResult.exitCode !== 0) {
+        throw new Error(`Failed to clone starter repo: ${await cloneResult.stderr()}`);
+      }
+
+      console.log(`[wake] Restoring custom files from Convex...`);
+      const dbFiles = await convex.query(api.chats.getAllFiles, {
+        chatId,
+        userId: user.id,
+      });
+      for (const file of dbFiles) {
+        const parts = file.path.split("/");
+        if (parts.length > 1) {
+          const dir = parts.slice(0, -1).join("/");
+          if (dir && dir !== "." && dir !== "..") {
+            await sandbox.fs.mkdir(dir, { recursive: true });
+          }
+        }
+        await sandbox.fs.writeFile(file.path, file.content, "utf8");
+      }
+
+      console.log(`[wake] Installing dependencies...`);
+      const installCmd = await sandbox.runCommand({
+        cmd: "pnpm",
+        args: ["install"],
+      });
+      const installResult = await installCmd.wait();
+      if (installResult.exitCode !== 0) {
+        throw new Error(`Failed to install dependencies: ${await installResult.stderr()}`);
+      }
+
+      console.log(`[wake] Starting dev server in background...`);
+      await sandbox.runCommand({
+        cmd: "pnpm",
+        args: ["dev"],
+        detached: true,
+      });
+
+      console.log(`[wake] Syncing workspace files to Convex...`);
+      await syncSandboxFilesToConvex({
+        sandbox,
+        onRuntimeUpdate: async (update) => {
+          await convex.mutation(api.chats.updateRuntime, {
+            chatId,
+            userId: user.id,
+            sandboxId: update.sandboxId ?? null,
+            previewUrl: update.previewUrl ?? null,
+            generatedFiles: update.generatedFiles,
+            overwriteGeneratedFiles: update.overwriteGeneratedFiles,
+          });
+          if (update.files && update.files.length > 0) {
+            await convex.mutation(api.chats.saveFilesBatch, {
+              chatId,
+              userId: user.id,
+              files: update.files,
+            });
+          }
+        },
+      });
+    } else if (source === "snapshot") {
+      console.log(`[wake] Restored from snapshot. Starting dev server and syncing...`);
+      await sandbox.runCommand({
+        cmd: "pnpm",
+        args: ["dev"],
+        detached: true,
+      });
+
+      await syncSandboxFilesToConvex({
+        sandbox,
+        onRuntimeUpdate: async (update) => {
+          await convex.mutation(api.chats.updateRuntime, {
+            chatId,
+            userId: user.id,
+            sandboxId: update.sandboxId ?? null,
+            previewUrl: update.previewUrl ?? null,
+            generatedFiles: update.generatedFiles,
+            overwriteGeneratedFiles: update.overwriteGeneratedFiles,
+          });
+          if (update.files && update.files.length > 0) {
+            await convex.mutation(api.chats.saveFilesBatch, {
+              chatId,
+              userId: user.id,
+              files: update.files,
+            });
+          }
+        },
+      });
+    }
+
     let previewUrl: string | null = null;
     try {
       previewUrl = sandbox.domain(port);
@@ -105,6 +212,7 @@ export async function POST(req: Request) {
       previewUrl,
     });
   } catch (error: any) {
+    console.error("Failed to wake sandbox:", error);
     return new Response(
       JSON.stringify({
         error: error?.message || "Failed to resume sandbox",

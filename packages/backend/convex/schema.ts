@@ -87,4 +87,13 @@ export default defineSchema({
   })
     .index("by_userId_and_createdAt", ["userId", "createdAt"])
     .index("by_chatId_and_createdAt", ["chatId", "createdAt"]),
+  files: defineTable({
+    chatId: v.string(),
+    userId: v.string(),
+    path: v.string(),
+    content: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_chatId_and_path", ["chatId", "path"])
+    .index("by_chatId", ["chatId"]),
 });

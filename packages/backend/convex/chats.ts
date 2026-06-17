@@ -192,6 +192,7 @@ export const updateRuntime = mutation({
     sandboxId: v.union(v.string(), v.null()),
     previewUrl: v.union(v.string(), v.null()),
     generatedFiles: v.optional(v.array(v.string())),
+    overwriteGeneratedFiles: v.optional(v.boolean()),
     status: v.optional(v.union(v.literal("creating"), v.literal("ready"), v.literal("error"))),
   },
   handler: async (ctx, args) => {
@@ -212,7 +213,9 @@ export const updateRuntime = mutation({
       sandboxId: args.sandboxId ?? app.sandboxId,
       previewUrl: args.previewUrl ?? app.previewUrl,
       generatedFiles: args.generatedFiles
-        ? [...new Set([...(app.generatedFiles ?? []), ...args.generatedFiles])]
+        ? args.overwriteGeneratedFiles
+          ? args.generatedFiles
+          : [...new Set([...(app.generatedFiles ?? []), ...args.generatedFiles])]
         : app.generatedFiles,
       status: args.status ?? app.status,
       updatedAt: Date.now(),
@@ -597,5 +600,135 @@ export const clearSandboxRuntime = mutation({
     });
 
     return app._id;
+  },
+});
+
+export const saveFile = mutation({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+    path: v.string(),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("files")
+      .withIndex("by_chatId_and_path", (q) =>
+        q.eq("chatId", args.chatId).eq("path", args.path),
+      )
+      .unique();
+
+    if (existing) {
+      if (existing.userId !== args.userId) {
+        throw new Error("File does not belong to the current user.");
+      }
+      await ctx.db.patch(existing._id, {
+        content: args.content,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("files", {
+        chatId: args.chatId,
+        userId: args.userId,
+        path: args.path,
+        content: args.content,
+        updatedAt: Date.now(),
+      });
+    }
+  },
+});
+
+export const getFile = query({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+    path: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const file = await ctx.db
+      .query("files")
+      .withIndex("by_chatId_and_path", (q) =>
+        q.eq("chatId", args.chatId).eq("path", args.path),
+      )
+      .unique();
+
+    if (file && file.userId !== args.userId) {
+      return null;
+    }
+    return file;
+  },
+});
+
+export const getAllFiles = query({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+      .collect();
+
+    return files
+      .filter((f) => f.userId === args.userId)
+      .map((f) => ({
+        path: f.path,
+        content: f.content,
+      }));
+  },
+});
+
+export const saveFilesBatch = mutation({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+    files: v.array(v.object({ path: v.string(), content: v.string() })),
+  },
+  handler: async (ctx, args) => {
+    for (const file of args.files) {
+      const existing = await ctx.db
+        .query("files")
+        .withIndex("by_chatId_and_path", (q) =>
+          q.eq("chatId", args.chatId).eq("path", file.path),
+        )
+        .unique();
+
+      if (existing) {
+        if (existing.userId !== args.userId) {
+          throw new Error("File does not belong to the current user.");
+        }
+        await ctx.db.patch(existing._id, {
+          content: file.content,
+          updatedAt: Date.now(),
+        });
+      } else {
+        await ctx.db.insert("files", {
+          chatId: args.chatId,
+          userId: args.userId,
+          path: file.path,
+          content: file.content,
+          updatedAt: Date.now(),
+        });
+      }
+    }
+  },
+});
+
+export const getAppBySandboxId = query({
+  args: {
+    sandboxId: v.string(),
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const app = await ctx.db
+      .query("apps")
+      .filter((q) => q.eq(q.field("sandboxId"), args.sandboxId))
+      .unique();
+
+    if (app && app.userId !== args.userId) {
+      return null;
+    }
+    return app;
   },
 });

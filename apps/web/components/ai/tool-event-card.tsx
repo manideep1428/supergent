@@ -71,6 +71,13 @@ export type ToolEvent =
       path: string
       error?: string
     }
+  | {
+      kind: "writeFiles"
+      id: string
+      status: "writing" | "done" | "error"
+      paths: string[]
+      error?: string
+    }
 
 function StatusIcon({ status }: { status: string }) {
   if (status === "error") {
@@ -104,6 +111,8 @@ function HeaderIcon({ kind }: { kind: ToolEvent["kind"] }) {
       return <FileText className="size-3.5" />
     case "writeFile":
       return <FileEdit className="size-3.5" />
+    case "writeFiles":
+      return <CloudUploadIcon className="size-3.5" />
   }
 }
 
@@ -149,6 +158,10 @@ function headerLabel(event: ToolEvent): string {
       if (event.status === "writing") return "Writing file"
       if (event.status === "error") return "Write failed"
       return "Wrote file"
+    case "writeFiles":
+      if (event.status === "writing") return "Writing files"
+      if (event.status === "error") return "Write failed"
+      return `Wrote ${event.paths.length} file${event.paths.length === 1 ? "" : "s"}`
   }
 }
 
@@ -246,6 +259,17 @@ function ToolBody({ event }: { event: ToolEvent }) {
     return (
       <div className="mt-1.5 space-y-0.5 pl-5 text-zinc-400 break-all">
         <div>path: {event.path}</div>
+        {event.error ? <div className="text-red-400">{event.error}</div> : null}
+      </div>
+    )
+  }
+
+  if (event.kind === "writeFiles") {
+    return (
+      <div className="mt-1.5 space-y-0.5 pl-5 text-zinc-400 break-all">
+        {event.paths.map((path, idx) => (
+          <div key={`${path}-${idx}`}>{path}</div>
+        ))}
         {event.error ? <div className="text-red-400">{event.error}</div> : null}
       </div>
     )

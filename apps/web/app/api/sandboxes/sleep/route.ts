@@ -2,7 +2,7 @@ import { withAuth } from "@workos-inc/authkit-nextjs";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "backend/convex/_generated/api";
 import { Sandbox } from "@vercel/sandbox";
-import { snapshotAndStop } from "@/lib/sandbox-tools";
+
 
 function getConvexClient() {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL;
@@ -110,17 +110,8 @@ export async function POST(req: Request) {
   }
 
   try {
-    const info = await snapshotAndStop({
-      sandboxId: runtime.sandboxId,
-      saveSnapshot: async ({ snapshotId, expiresAt }) => {
-        await convex.mutation(api.chats.saveSandboxSnapshot, {
-          chatId: chatId as string,
-          userId: user.id,
-          snapshotId,
-          expiresAt,
-        });
-      },
-    });
+    const sandbox = await Sandbox.get({ sandboxId: runtime.sandboxId });
+    await sandbox.stop();
 
     await convex.mutation(api.chats.clearSandboxRuntime, {
       chatId,
@@ -129,16 +120,22 @@ export async function POST(req: Request) {
     });
 
     return Response.json({
-      status: "snapshotted",
-      snapshotId: info.snapshotId,
-      expiresAt: info.expiresAt,
+      status: "stopped",
+      snapshotId: null,
+      reason: "stopped-no-snapshot",
     });
   } catch (error: any) {
-    return new Response(
-      JSON.stringify({
-        error: error?.message || "Failed to snapshot sandbox",
-      }),
-      { status: 500 },
-    );
+    // If getting or stopping the sandbox failed, we should still clear the live sandboxId in DB
+    await convex.mutation(api.chats.clearSandboxRuntime, {
+      chatId,
+      userId: user.id,
+      keepPreviewUrl: false,
+    });
+    return Response.json({
+      status: "stopped",
+      snapshotId: null,
+      reason: "stop-failed-cleared-runtime",
+      error: error?.message,
+    });
   }
 }

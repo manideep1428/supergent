@@ -352,7 +352,23 @@ function messagesFromStored(storedMessages: StoredMessage[]): MessageType[] {
         })
 }
 
-export function ChatbotDemo({ chatId, userId }: { chatId?: string; userId?: string | null }) {
+export function ChatbotDemo({
+    chatId,
+    userId,
+    sandboxStatus,
+    waking = false,
+    onReconnectSandbox,
+}: {
+    chatId?: string
+    userId?: string | null
+    sandboxStatus?: {
+        status: string
+        sandboxId: string | null
+        hasSnapshot: boolean
+    } | null
+    waking?: boolean
+    onReconnectSandbox?: () => Promise<void>
+}) {
     const [model, setModel] = useSelectedModel(
         models.map(m => m.id),
         "gemini-3.5-flash",
@@ -937,8 +953,30 @@ export function ChatbotDemo({ chatId, userId }: { chatId?: string; userId?: stri
         )
     }
 
+    const showReconnect = sandboxStatus &&
+        sandboxStatus.status !== "running" &&
+        sandboxStatus.status !== "pending"
+
     return (
         <div className="relative flex flex-1 min-h-0 w-full flex-col overflow-hidden">
+            {showReconnect && (
+                <div className="px-3 py-2 shrink-0 border-b border-white/10 bg-zinc-950 flex flex-col gap-2">
+                    <button
+                        onClick={onReconnectSandbox}
+                        disabled={waking}
+                        className="w-full bg-white text-black hover:bg-zinc-200 transition-colors py-2 px-4 font-mono text-xs uppercase tracking-wider font-semibold rounded-none flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                        {waking ? (
+                            <>
+                                <Loader2Icon className="size-3.5 animate-spin" />
+                                <span>Reactivating...</span>
+                            </>
+                        ) : (
+                            <span>reactive the sandbox and run</span>
+                        )}
+                    </button>
+                </div>
+            )}
             <Conversation className="min-h-0 flex-1 scrollbar-hide">
                 <ConversationContent>
                     {messages.map(({ versions, ...message }) => (

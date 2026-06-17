@@ -33,7 +33,7 @@ Use the sandbox workflow:
    * Only modify files necessary for the user's request.
 
 5. For a brand new sandbox:
-
+ 
    * Clone the starter repository:
      https://github.com/manideep1428/supergent-starter
    * Use the cloned project as the application base.
@@ -43,6 +43,7 @@ Use the sandbox workflow:
    * Install dependencies using:
      pnpm install
    * Wait for installation to complete before continuing.
+   * Note: On sandbox reactivation or reconnection, the system will automatically re-clone the starter repository, restore all custom files from the database, run pnpm install, start the dev server (pnpm dev), and expose port 3000.
 
 6. Add required dependencies only when necessary.
 

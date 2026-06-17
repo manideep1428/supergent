@@ -27,7 +27,9 @@ type RuntimeUpdate = {
   sandboxId?: string;
   previewUrl?: string;
   generatedFiles?: string[];
+  files?: { path: string; content: string }[];
   status?: "creating" | "ready" | "error";
+  overwriteGeneratedFiles?: boolean;
 };
 
 export type ToolEvent =
@@ -86,6 +88,13 @@ export type ToolEvent =
       id: string;
       status: "writing" | "done" | "error";
       path: string;
+      error?: string;
+    }
+  | {
+      kind: "writeFiles";
+      id: string;
+      status: "writing" | "done" | "error";
+      paths: string[];
       error?: string;
     };
 
@@ -233,6 +242,82 @@ export async function resumeSandboxForChat({
   ports?: number[];
 }) {
   return reattachOrCreateSandbox({ runtime, ports });
+}
+
+export async function syncSandboxFilesToConvex({
+  sandbox,
+  onRuntimeUpdate,
+}: {
+  sandbox: Sandbox;
+  onRuntimeUpdate?: (update: RuntimeUpdate) => Promise<void> | void;
+}) {
+  try {
+    const nodeScript = `
+const fs = require('fs');
+const path = require('path');
+const ignoreDirs = new Set(['node_modules', '.next', '.git']);
+const ignoreFiles = new Set(['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock']);
+
+function walk(dir) {
+  let results = [];
+  try {
+    const list = fs.readdirSync(dir);
+    for (const file of list) {
+      const filePath = path.join(dir, file);
+      const stat = fs.statSync(filePath);
+      if (stat && stat.isDirectory()) {
+        if (!ignoreDirs.has(file)) {
+          results = results.concat(walk(filePath));
+        }
+      } else {
+        if (!ignoreFiles.has(file)) {
+          results.push(filePath);
+        }
+      }
+    }
+  } catch (err) {}
+  return results;
+}
+
+const files = walk('.');
+const output = [];
+for (const f of files) {
+  const rel = path.relative('.', f).replace(/\\\\/g, '/');
+  try {
+    const stat = fs.statSync(f);
+    if (stat.size > 500000) continue;
+    const content = fs.readFileSync(f, 'utf8');
+    output.push({ path: rel, content });
+  } catch (e) {}
+}
+console.log(JSON.stringify(output));
+`;
+
+    const cmd = await sandbox.runCommand({
+      cmd: "node",
+      args: ["-e", nodeScript],
+    });
+    const result = await cmd.wait();
+    const stdout = await result.stdout();
+    
+    if (result.exitCode !== 0) {
+      console.error("File sync script failed with exit code:", result.exitCode, await result.stderr());
+      return;
+    }
+
+    const files = JSON.parse(stdout.trim()) as { path: string; content: string }[];
+    const paths = files.map((f) => f.path);
+
+    await onRuntimeUpdate?.({
+      sandboxId: sandbox.sandboxId,
+      generatedFiles: paths,
+      files,
+      overwriteGeneratedFiles: true,
+      status: "creating",
+    });
+  } catch (error) {
+    console.error("Error syncing files from sandbox:", error);
+  }
 }
 
 async function getOrReconnectSandbox({
@@ -430,22 +515,16 @@ export function createSandboxTools({
             })),
           );
 
-          const writtenPaths = files.map((file) => file.path);
-
-          await onRuntimeUpdate?.({
-            sandboxId,
-            generatedFiles: writtenPaths,
-            status: "creating",
-          });
+          await syncSandboxFilesToConvex({ sandbox, onRuntimeUpdate });
 
           onToolEvent?.({
             kind: "generateFiles",
             id: eventId,
             status: "done",
-            paths: writtenPaths,
+            paths: files.map((file) => file.path),
           });
 
-          return `Generated and uploaded ${files.length} files with ${modelId}: ${writtenPaths.join(", ")}`;
+          return `Generated and uploaded ${files.length} files with ${modelId}`;
         } catch (error) {
           await onRuntimeUpdate?.({ status: "error" });
           const message = errorMessage(error);
@@ -730,12 +809,7 @@ export function createSandboxTools({
 
           await sandbox.fs.writeFile(path, content, "utf8");
 
-          // Keep DB-side runtime generatedFiles list in sync
-          await onRuntimeUpdate?.({
-            sandboxId,
-            generatedFiles: [path],
-            status: "creating",
-          });
+          await syncSandboxFilesToConvex({ sandbox, onRuntimeUpdate });
 
           onToolEvent?.({
             kind: "writeFile",
@@ -755,6 +829,74 @@ export function createSandboxTools({
             error: message,
           });
           return `Error writing file ${path}: ${message}`;
+        }
+      },
+    }),
+    writeFiles: tool({
+      description: "Create or overwrite multiple files in the Vercel Sandbox at once. Paths are relative to the sandbox root unless absolute. Automatically creates parent directories.",
+      inputSchema: z.object({
+        sandboxId: z.string(),
+        files: z.array(z.object({
+          path: z.string(),
+          content: z.string(),
+        })).min(1),
+      }),
+      execute: async ({ sandboxId, files }, { toolCallId }) => {
+        const eventId = toolCallId ?? `writeFiles-${Date.now()}`;
+        const paths = files.map(f => f.path);
+        onToolEvent?.({
+          kind: "writeFiles",
+          id: eventId,
+          status: "writing",
+          paths,
+        });
+
+        try {
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+          });
+
+          // Ensure parent directories exist
+          for (const file of files) {
+            const parts = file.path.split("/");
+            if (parts.length > 1) {
+              const dir = parts.slice(0, -1).join("/");
+              if (dir && dir !== "." && dir !== "..") {
+                await sandbox.fs.mkdir(dir, { recursive: true });
+              }
+            }
+          }
+
+          await sandbox.writeFiles(
+            files.map((file) => ({
+              path: file.path,
+              content: file.content,
+            })),
+          );
+
+          await syncSandboxFilesToConvex({ sandbox, onRuntimeUpdate });
+
+          onToolEvent?.({
+            kind: "writeFiles",
+            id: eventId,
+            status: "done",
+            paths,
+          });
+
+          return `Successfully wrote ${files.length} files: ${paths.join(", ")}`;
+        } catch (error) {
+          const message = errorMessage(error);
+          onToolEvent?.({
+            kind: "writeFiles",
+            id: eventId,
+            status: "error",
+            paths,
+            error: message,
+          });
+          return `Error writing files: ${message}`;
         }
       },
     }),
