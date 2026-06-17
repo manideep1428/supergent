@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
+import { chargeProjectCreation } from "./credits";
 
 const roleValidator = v.union(
   v.literal("user"),
@@ -51,6 +52,8 @@ export const createOrGetApp = mutation({
       return existing._id;
     }
 
+    await chargeProjectCreation(ctx.db, args.userId);
+
     return await ctx.db.insert("apps", {
       chatId: args.chatId,
       userId: args.userId,
@@ -76,6 +79,8 @@ export const addMessage = mutation({
     content: v.string(),
     modelId: v.union(v.string(), v.null()),
     status: statusValidator,
+    reasoning: v.optional(v.string()),
+    toolEvents: v.optional(v.array(v.any())),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -89,6 +94,8 @@ export const addMessage = mutation({
     }
 
     if (!app) {
+      await chargeProjectCreation(ctx.db, args.userId);
+
       await ctx.db.insert("apps", {
         chatId: args.chatId,
         userId: args.userId,
@@ -121,8 +128,60 @@ export const addMessage = mutation({
       content: args.content,
       modelId: args.modelId,
       status: args.status,
+      reasoning: args.reasoning,
+      toolEvents: args.toolEvents,
       createdAt: now,
     });
+  },
+});
+
+export const updateMessage = mutation({
+  args: {
+    messageId: v.id("messages"),
+    chatId: v.string(),
+    userId: v.string(),
+    content: v.string(),
+    status: statusValidator,
+    reasoning: v.optional(v.string()),
+    toolEvents: v.optional(v.array(v.any())),
+  },
+  handler: async (ctx, args) => {
+    const message = await ctx.db.get(args.messageId);
+    if (!message) {
+      throw new Error("Message not found.");
+    }
+    if (message.userId !== args.userId || message.chatId !== args.chatId) {
+      throw new Error("Message does not belong to the current user/chat.");
+    }
+
+    const patch: any = {
+      content: args.content,
+      status: args.status,
+    };
+    if (args.reasoning !== undefined) {
+      patch.reasoning = args.reasoning;
+    }
+    if (args.toolEvents !== undefined) {
+      patch.toolEvents = args.toolEvents;
+    }
+
+    await ctx.db.patch(args.messageId, patch);
+
+    // Also update the app status to "ready" when the assistant message finishes
+    if (message.role === "assistant" && args.status === "saved") {
+      const app = await ctx.db
+        .query("apps")
+        .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+        .unique();
+      if (app && app.userId === args.userId) {
+        await ctx.db.patch(app._id, {
+          status: "ready",
+          updatedAt: Date.now(),
+        });
+      }
+    }
+
+    return args.messageId;
   },
 });
 
@@ -188,8 +247,18 @@ export const list = query({
       .order("asc")
       .collect();
 
+    const favorite = await ctx.db
+      .query("favoriteProjects")
+      .withIndex("by_userId_and_chatId", (q) =>
+        q.eq("userId", args.userId).eq("chatId", args.chatId),
+      )
+      .unique();
+
     return {
-      app,
+      app: {
+        ...app,
+        isFavorite: !!favorite,
+      },
       messages: messages.filter((message) => message.userId === args.userId),
     };
   },
@@ -360,6 +429,36 @@ export const deleteProject = mutation({
       deletedSnapshots: snapshot ? 1 : 0,
       deletedApp: true,
     };
+  },
+});
+
+export const renameProject = mutation({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+    title: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const app = await ctx.db
+      .query("apps")
+      .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+      .unique();
+
+    if (!app) {
+      throw new Error("Project not found.");
+    }
+
+    if (app.userId !== args.userId) {
+      throw new Error("Chat does not belong to the current user.");
+    }
+
+    const title = args.title.trim() || "Untitled app";
+    await ctx.db.patch(app._id, {
+      title: title.length > 64 ? `${title.slice(0, 61)}...` : title,
+      updatedAt: Date.now(),
+    });
+
+    return { ok: true };
   },
 });
 

@@ -92,7 +92,7 @@ export async function POST(request: Request) {
       metadata: {
         plan,
         plan_label: planLabels[plan],
-        app: "emergent",
+        app: "supergent",
       },
       customer_metadata: {
         workos_user_id: user.id,

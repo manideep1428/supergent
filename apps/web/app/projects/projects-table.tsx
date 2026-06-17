@@ -10,6 +10,7 @@ import {
   FilterIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
+  PencilIcon,
   SearchIcon,
   StarIcon,
   StarOffIcon,
@@ -112,6 +113,9 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
 
   const [pendingDelete, setPendingDelete] = React.useState<Project | null>(null)
   const [deleting, setDeleting] = React.useState(false)
+  const [pendingRename, setPendingRename] = React.useState<Project | null>(null)
+  const [renameValue, setRenameValue] = React.useState("")
+  const [renaming, setRenaming] = React.useState(false)
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -201,6 +205,46 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
     }
   }
 
+  const handleRename = async () => {
+    if (!pendingRename) return
+    const newTitle = renameValue.trim()
+    if (!newTitle) return
+    setRenaming(true)
+    // Optimistic update
+    setProjects((prev) =>
+      prev.map((p) => p.chatId === pendingRename.chatId ? { ...p, title: newTitle } : p)
+    )
+    try {
+      const response = await fetch(
+        `/api/projects/${encodeURIComponent(pendingRename.chatId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: newTitle }),
+        }
+      )
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({} as { error?: string }))
+        throw new Error(body.error ?? `HTTP ${response.status}`)
+      }
+      window.dispatchEvent(new CustomEvent("favoritesChanged"))
+      toast.success("Project renamed", { description: newTitle })
+      setPendingRename(null)
+    } catch (error: any) {
+      // Revert
+      setProjects((prev) =>
+        prev.map((p) =>
+          p.chatId === pendingRename.chatId ? { ...p, title: pendingRename.title } : p
+        )
+      )
+      toast.error("Could not rename project", {
+        description: error?.message ?? "Unknown error",
+      })
+    } finally {
+      setRenaming(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
@@ -287,7 +331,6 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
                 <th className="px-4 py-3 text-left font-medium">Name</th>
                 <th className="px-4 py-3 text-left font-medium">Status</th>
                 <th className="hidden px-4 py-3 text-left font-medium md:table-cell">Files</th>
-                <th className="hidden px-4 py-3 text-left font-medium md:table-cell">Model</th>
                 <th className="px-4 py-3 text-right font-medium">{SORT_LABEL[sort]}</th>
                 <th aria-hidden className="px-4 py-3" />
               </tr>
@@ -319,9 +362,7 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
                   <td className="hidden px-4 py-3 text-muted-foreground md:table-cell">
                     {project.generatedFilesCount}
                   </td>
-                  <td className="hidden px-4 py-3 font-mono text-xs text-muted-foreground md:table-cell">
-                    {project.modelId || "—"}
-                  </td>
+
                   <td className="px-4 py-3 text-right text-xs text-muted-foreground">
                     {formatRelative(
                       sort === "created" ? project.createdAt : project.updatedAt,
@@ -342,7 +383,7 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
                           <MoreHorizontalIcon className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-44">
+                      <DropdownMenuContent align="end" className="w-48">
                         <DropdownMenuItem onSelect={() => handleOpen(project.chatId)}>
                           <MessageSquareIcon className="mr-2 size-4" />
                           Open chat
@@ -373,6 +414,15 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
                               Add to favorites
                             </>
                           )}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            setRenameValue(project.title || "")
+                            setPendingRename(project)
+                          }}
+                        >
+                          <PencilIcon className="mr-2 size-4" />
+                          Rename
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -423,6 +473,55 @@ export function ProjectsTable({ initialProjects }: { initialProjects: Project[] 
               type="button"
             >
               {deleting ? "Deleting..." : "Delete"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(pendingRename)}
+        onOpenChange={(open) => {
+          if (!open && !renaming) setPendingRename(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rename project</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter a new name for this project.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-2">
+            <Input
+              autoFocus
+              disabled={renaming}
+              maxLength={64}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  handleRename()
+                }
+              }}
+              placeholder="Project name"
+              value={renameValue}
+            />
+          </div>
+          <AlertDialogFooter>
+            <Button
+              disabled={renaming}
+              onClick={() => setPendingRename(null)}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={renaming || !renameValue.trim()}
+              onClick={handleRename}
+              type="button"
+            >
+              {renaming ? "Saving..." : "Save"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

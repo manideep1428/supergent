@@ -34,3 +34,7 @@ npm-debug.log*
 # Misc
 .DS_Store
 *.pem
+.env*.local
+
+
+/apps/web/project-bc5ac9e3-64ad-4974-961-dc2624cfd308.json

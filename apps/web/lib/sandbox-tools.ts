@@ -73,6 +73,20 @@ export type ToolEvent =
       snapshotId?: string;
       expiresAt?: number;
       error?: string;
+    }
+  | {
+      kind: "readFile";
+      id: string;
+      status: "reading" | "done" | "error";
+      path: string;
+      error?: string;
+    }
+  | {
+      kind: "writeFile";
+      id: string;
+      status: "writing" | "done" | "error";
+      path: string;
+      error?: string;
     };
 
 export type SnapshotInfo = {
@@ -221,6 +235,71 @@ export async function resumeSandboxForChat({
   return reattachOrCreateSandbox({ runtime, ports });
 }
 
+async function getOrReconnectSandbox({
+  sandboxId,
+  getActiveRuntime,
+  onRuntimeUpdate,
+  onToolEvent,
+  ports = [3000],
+}: {
+  sandboxId: string;
+  getActiveRuntime?: () => Promise<ActiveRuntime | null>;
+  onRuntimeUpdate?: (update: RuntimeUpdate) => Promise<void> | void;
+  onToolEvent?: (event: ToolEvent) => void;
+  ports?: number[];
+}): Promise<Sandbox> {
+  const runtime = (await getActiveRuntime?.()) ?? null;
+  const targetSandboxId = runtime?.sandboxId || sandboxId;
+
+  try {
+    const sandbox = await Sandbox.get({ sandboxId: targetSandboxId });
+    if (sandbox.status === "running" || sandbox.status === "pending") {
+      return sandbox;
+    }
+    throw new Error(`Sandbox status is ${sandbox.status}`);
+  } catch (error) {
+    console.warn(`Sandbox connection lost or status inactive for ${targetSandboxId}:`, error);
+
+    const eventId = `reconnect-${Date.now()}`;
+    onToolEvent?.({
+      kind: "createSandbox",
+      id: eventId,
+      status: "loading",
+      source: runtime?.snapshotId ? "snapshot" : "running",
+    });
+
+    try {
+      const { sandbox, source } = await reattachOrCreateSandbox({
+        runtime,
+        ports,
+      });
+
+      await onRuntimeUpdate?.({
+        sandboxId: sandbox.sandboxId,
+        status: "creating",
+      });
+
+      onToolEvent?.({
+        kind: "createSandbox",
+        id: eventId,
+        status: "done",
+        sandboxId: sandbox.sandboxId,
+        source,
+      });
+
+      return sandbox;
+    } catch (reconnectError) {
+      onToolEvent?.({
+        kind: "createSandbox",
+        id: eventId,
+        status: "error",
+        error: errorMessage(reconnectError),
+      });
+      throw reconnectError;
+    }
+  }
+}
+
 async function generateFilesForPaths({
   model,
   messages,
@@ -266,11 +345,15 @@ export function createSandboxTools({
       }),
       execute: async ({ ports }, { toolCallId }) => {
         const eventId = toolCallId ?? `createSandbox-${Date.now()}`;
-        onToolEvent?.({ kind: "createSandbox", id: eventId, status: "loading" });
-
         try {
           const portsList = ports?.length ? ports : [3000];
           const runtime = (await getActiveRuntime?.()) ?? null;
+          onToolEvent?.({
+            kind: "createSandbox",
+            id: eventId,
+            status: "loading",
+            source: runtime?.sandboxId ? "running" : runtime?.snapshotId ? "snapshot" : "fresh",
+          });
 
           const { sandbox, source } = await reattachOrCreateSandbox({
             runtime,
@@ -328,7 +411,12 @@ export function createSandboxTools({
         });
 
         try {
-          const sandbox = await Sandbox.get({ sandboxId });
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+          });
           const files = await generateFilesForPaths({
             model,
             messages: messages as ModelMessage[],
@@ -392,7 +480,12 @@ export function createSandboxTools({
         });
 
         try {
-          const sandbox = await Sandbox.get({ sandboxId });
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+          });
           const cmd = await sandbox.runCommand({
             detached: true,
             cmd: command,
@@ -464,7 +557,13 @@ export function createSandboxTools({
         });
 
         try {
-          const sandbox = await Sandbox.get({ sandboxId });
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+            ports: [port],
+          });
           const previewUrl = sandbox.domain(port);
 
           await onRuntimeUpdate?.({
@@ -510,7 +609,12 @@ export function createSandboxTools({
         const expiration = expirationMs ?? SNAPSHOT_EXPIRATION_MS;
 
         try {
-          const sandbox = await Sandbox.get({ sandboxId });
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+          });
           const snapshot = await sandbox.snapshot({ expiration });
           const expiresAt = snapshot.expiresAt
             ? snapshot.expiresAt.getTime()
@@ -543,6 +647,114 @@ export function createSandboxTools({
             error: message,
           });
           return `Error saving snapshot: ${message}`;
+        }
+      },
+    }),
+    readFile: tool({
+      description: "Read the full contents of a file from the Vercel Sandbox. Paths are relative to the sandbox root unless absolute.",
+      inputSchema: z.object({
+        sandboxId: z.string(),
+        path: z.string(),
+      }),
+      execute: async ({ sandboxId, path }, { toolCallId }) => {
+        const eventId = toolCallId ?? `readFile-${Date.now()}`;
+        onToolEvent?.({
+          kind: "readFile",
+          id: eventId,
+          status: "reading",
+          path,
+        });
+
+        try {
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+          });
+          const content = await sandbox.fs.readFile(path, "utf8");
+
+          onToolEvent?.({
+            kind: "readFile",
+            id: eventId,
+            status: "done",
+            path,
+          });
+
+          return content;
+        } catch (error) {
+          const message = errorMessage(error);
+          onToolEvent?.({
+            kind: "readFile",
+            id: eventId,
+            status: "error",
+            path,
+            error: message,
+          });
+          return `Error reading file ${path}: ${message}`;
+        }
+      },
+    }),
+    writeFile: tool({
+      description: "Create or overwrite a file in the Vercel Sandbox. Paths are relative to the sandbox root unless absolute. Automatically creates parent directories.",
+      inputSchema: z.object({
+        sandboxId: z.string(),
+        path: z.string(),
+        content: z.string(),
+      }),
+      execute: async ({ sandboxId, path, content }, { toolCallId }) => {
+        const eventId = toolCallId ?? `writeFile-${Date.now()}`;
+        onToolEvent?.({
+          kind: "writeFile",
+          id: eventId,
+          status: "writing",
+          path,
+        });
+
+        try {
+          const sandbox = await getOrReconnectSandbox({
+            sandboxId,
+            getActiveRuntime,
+            onRuntimeUpdate,
+            onToolEvent,
+          });
+
+          // Extract parent directory and create if it doesn't exist
+          const parts = path.split("/");
+          if (parts.length > 1) {
+            const dir = parts.slice(0, -1).join("/");
+            if (dir && dir !== "." && dir !== "..") {
+              await sandbox.fs.mkdir(dir, { recursive: true });
+            }
+          }
+
+          await sandbox.fs.writeFile(path, content, "utf8");
+
+          // Keep DB-side runtime generatedFiles list in sync
+          await onRuntimeUpdate?.({
+            sandboxId,
+            generatedFiles: [path],
+            status: "creating",
+          });
+
+          onToolEvent?.({
+            kind: "writeFile",
+            id: eventId,
+            status: "done",
+            path,
+          });
+
+          return `Successfully wrote file: ${path}`;
+        } catch (error) {
+          const message = errorMessage(error);
+          onToolEvent?.({
+            kind: "writeFile",
+            id: eventId,
+            status: "error",
+            path,
+            error: message,
+          });
+          return `Error writing file ${path}: ${message}`;
         }
       },
     }),

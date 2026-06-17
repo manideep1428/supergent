@@ -2,30 +2,57 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
+import Image from "next/image"
+import { useRouter } from "next/navigation"
+import { useQuery } from "convex/react"
+import { api } from "backend/convex/_generated/api"
 import { Avatar, AvatarFallback, AvatarImage } from "@workspace/ui/components/avatar"
 import { Button } from "@workspace/ui/components/button"
 import { Separator } from "@workspace/ui/components/separator"
 import {
   ChevronDownIcon,
   Code2Icon,
+  Coins,
   DatabaseIcon,
   EyeIcon,
   ExternalLinkIcon,
   GlobeIcon,
   MoreHorizontalIcon,
+  PencilIcon,
   RefreshCwIcon,
   SparklesIcon,
+  StarIcon,
   TerminalIcon,
+  Trash2Icon,
 } from "lucide-react"
 import ChatbotDemo from "@/components/ai/chat-page"
 import { CodeViewer } from "@/components/ai/code-viewer"
 import { FileExplorer } from "@/components/ai/file-explorer"
 import { UserMenu } from "@/components/user-menu"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@workspace/ui/components/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@workspace/ui/components/dialog"
+import { Input } from "@workspace/ui/components/input"
+import { toast } from "sonner"
 
 const STORAGE_KEY = "chat_position"
 const STORAGE_EVENT = "chatPositionChanged"
 
-const SANDBOX_IDLE_MS = 2 * 60 * 1000 // 2 minutes
+// How often to ping the sandbox so Vercel doesn't auto-expire it (4 min)
+const SANDBOX_KEEPALIVE_MS = 4 * 60 * 1000
+// Grace period before sleeping when the tab goes to background (30 min)
+const SANDBOX_BG_GRACE_MS = 30 * 60 * 1000
 const STATUS_POLL_MS = 5_000
 
 type ChatPosition = "left" | "right"
@@ -57,6 +84,7 @@ type AppRuntime = {
   sandboxId?: string | null
   previewUrl?: string | null
   generatedFiles?: string[]
+  isFavorite?: boolean
 }
 
 function EmptyPreview({ projectId }: { projectId: string }) {
@@ -131,20 +159,20 @@ function FilesView({ app }: { app: AppRuntime | null }) {
 
     const url = `/api/sandboxes/${sandboxId}/files?path=${encodeURIComponent(selectedPath)}`
 
-    ;(async () => {
-      try {
-        const response = await fetch(url, { cache: "no-store" })
-        if (!response.ok) {
-          throw new Error(`Could not read ${selectedPath} (HTTP ${response.status})`)
+      ; (async () => {
+        try {
+          const response = await fetch(url, { cache: "no-store" })
+          if (!response.ok) {
+            throw new Error(`Could not read ${selectedPath} (HTTP ${response.status})`)
+          }
+          const text = await response.text()
+          if (!cancelled) setContent(text)
+        } catch (error: any) {
+          if (!cancelled) setContentError(error?.message || "Failed to load file")
+        } finally {
+          if (!cancelled) setContentLoading(false)
         }
-        const text = await response.text()
-        if (!cancelled) setContent(text)
-      } catch (error: any) {
-        if (!cancelled) setContentError(error?.message || "Failed to load file")
-      } finally {
-        if (!cancelled) setContentLoading(false)
-      }
-    })()
+      })()
 
     return () => {
       cancelled = true
@@ -245,20 +273,29 @@ function WorkspaceBody({
   )
 }
 
-export function ChatSessionShell({ projectId, user }: { projectId: string; user: { profilePictureUrl?: string | null; firstName?: string | null; email?: string | null } }) {
+export function ChatSessionShell({ projectId, user }: { projectId: string; user: { id?: string | null; profilePictureUrl?: string | null; firstName?: string | null; email?: string | null } }) {
   const [chatPosition, setChatPosition] = useState<ChatPosition>("right")
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("preview")
-  const [app, setApp] = useState<AppRuntime | null>(null)
   const [credits, setCredits] = useState<number | null>(null)
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatusPayload | null>(null)
   const [waking, setWaking] = useState(false)
+  const router = useRouter()
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [unfavoriteDialogOpen, setUnfavoriteDialogOpen] = useState(false)
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState("")
+  const [renameLoading, setRenameLoading] = useState(false)
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [favoriteMutating, setFavoriteMutating] = useState(false)
 
-  // Tracks whether the user is currently active so the idle timer only
-  // fires after a real period of inactivity inside the workspace area.
-  const idleTimerRef = useRef<number | null>(null)
+  // Tracks background-grace timer (fires when tab stays hidden too long)
+  const bgGraceTimerRef = useRef<number | null>(null)
   const sleepInFlightRef = useRef(false)
   const wakeInFlightRef = useRef(false)
   const lastWakeAtRef = useRef(0)
+  // Ref so the keepalive / pagehide handlers can read the latest status
+  // without going stale inside closures.
+  const sandboxStatusRef = useRef<SandboxStatusPayload | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -267,22 +304,86 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
       .then((data: { credits?: { balance: number } } | null) => {
         if (!cancelled && data?.credits?.balance != null) setCredits(data.credits.balance)
       })
-      .catch(() => {})
+      .catch(() => { })
     return () => { cancelled = true }
   }, [])
 
-  const loadApp = useCallback(async () => {
+  const chatData = useQuery(
+    api.chats.list,
+    user.id ? { chatId: projectId, userId: user.id } : "skip"
+  )
+  const app = chatData?.app ?? null
+
+  const toggleFavorite = useCallback(async () => {
+    if (!app || favoriteMutating) return
+    setFavoriteMutating(true)
     try {
-      const response = await fetch(`/api/chat?chatId=${encodeURIComponent(projectId)}`)
-      if (!response.ok) {
-        return
+      const isFav = app.isFavorite
+      const url = `/api/projects/${encodeURIComponent(projectId)}/favorite`
+      const method = isFav ? "DELETE" : "POST"
+      const response = await fetch(url, { method })
+      if (response.ok) {
+        toast.success(isFav ? "Removed from favorites" : "Added to favorites")
+        window.dispatchEvent(new Event("favoritesChanged"))
+      } else {
+        toast.error("Failed to update favorite status")
       }
-      const data = await response.json() as { app?: AppRuntime | null }
-      setApp(data.app ?? null)
-    } catch (error) {
-      console.error(error)
+    } catch (err) {
+      console.error("Failed to toggle favorite", err)
+      toast.error("Failed to update favorite status")
+    } finally {
+      setFavoriteMutating(false)
     }
-  }, [projectId])
+  }, [app, projectId, favoriteMutating])
+
+  const handleRename = useCallback(async () => {
+    const newTitle = renameValue.trim()
+    if (!newTitle) return
+    setRenameLoading(true)
+    try {
+      const url = `/api/projects/${encodeURIComponent(projectId)}`
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle }),
+      })
+      if (response.ok) {
+        toast.success("Project renamed")
+        setRenameDialogOpen(false)
+        window.dispatchEvent(new Event("favoritesChanged"))
+      } else {
+        const errData = await response.json().catch(() => ({}))
+        toast.error(errData.error || "Failed to rename project")
+      }
+    } catch (err) {
+      console.error("Failed to rename project", err)
+      toast.error("Failed to rename project")
+    } finally {
+      setRenameLoading(false)
+    }
+  }, [projectId, renameValue])
+
+  const handleDelete = useCallback(async () => {
+    setDeleteLoading(true)
+    try {
+      const url = `/api/projects/${encodeURIComponent(projectId)}`
+      const response = await fetch(url, { method: "DELETE" })
+      if (response.ok) {
+        toast.success("Project deleted successfully")
+        window.dispatchEvent(new Event("favoritesChanged"))
+        router.push("/")
+      } else {
+        const errData = await response.json().catch(() => ({}))
+        toast.error(errData.error || "Failed to delete project")
+      }
+    } catch (err) {
+      console.error("Failed to delete project", err)
+      toast.error("Failed to delete project")
+    } finally {
+      setDeleteLoading(false)
+      setDeleteDialogOpen(false)
+    }
+  }, [projectId, router])
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY)
@@ -306,11 +407,7 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
     return () => window.removeEventListener(STORAGE_EVENT, handleStorageEvent as EventListener)
   }, [])
 
-  useEffect(() => {
-    loadApp()
-    const interval = window.setInterval(loadApp, 3000)
-    return () => window.clearInterval(interval)
-  }, [loadApp])
+
 
   const fetchSandboxStatus = useCallback(async () => {
     try {
@@ -335,13 +432,8 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
 
   const sleepSandbox = useCallback(async () => {
     if (sleepInFlightRef.current) return
-    if (
-      !sandboxStatus ||
-      !sandboxStatus.sandboxId ||
-      sandboxStatus.status !== "running"
-    ) {
-      return
-    }
+    const status = sandboxStatusRef.current
+    if (!status || !status.sandboxId || status.status !== "running") return
 
     sleepInFlightRef.current = true
     try {
@@ -358,7 +450,8 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
     } finally {
       sleepInFlightRef.current = false
     }
-  }, [fetchSandboxStatus, projectId, sandboxStatus])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchSandboxStatus, projectId])
 
   const wakeSandbox = useCallback(async () => {
     // Throttle wake calls so a flurry of activity events doesn't hammer the
@@ -385,7 +478,7 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
       })
       if (response.ok) {
         lastWakeAtRef.current = Date.now()
-        await Promise.all([fetchSandboxStatus(), loadApp()])
+        await fetchSandboxStatus()
       }
     } catch (error) {
       console.error("Failed to wake sandbox", error)
@@ -393,80 +486,100 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
       wakeInFlightRef.current = false
       setWaking(false)
     }
-  }, [fetchSandboxStatus, loadApp, projectId, sandboxStatus])
+  }, [fetchSandboxStatus, projectId, sandboxStatus])
 
-  // Reset the 2-min idle timer on any in-window activity.
-  const resetIdleTimer = useCallback(() => {
-    if (idleTimerRef.current !== null) {
-      window.clearTimeout(idleTimerRef.current)
-    }
-    idleTimerRef.current = window.setTimeout(() => {
-      sleepSandbox()
-    }, SANDBOX_IDLE_MS)
-  }, [sleepSandbox])
+  // Keep sandboxStatusRef in sync so closures always see the latest value.
+  useEffect(() => {
+    sandboxStatusRef.current = sandboxStatus
+  }, [sandboxStatus])
 
+  // ── Keepalive ping: prevent Vercel from auto-expiring the sandbox ─────────
+  // Runs every 4 minutes while the tab is open and the sandbox is running.
   useEffect(() => {
     if (typeof window === "undefined") return
 
-    const onActivity = () => {
-      resetIdleTimer()
-      // If the sandbox already snapshotted, restore it the moment the user
-      // re-engages with the workspace - even before they send a message.
-      if (
-        sandboxStatus &&
-        sandboxStatus.status !== "running" &&
-        sandboxStatus.status !== "pending" &&
-        sandboxStatus.hasSnapshot
-      ) {
-        wakeSandbox()
+    const ping = async () => {
+      const status = sandboxStatusRef.current
+      if (!status || status.status !== "running" || !status.sandboxId) return
+      try {
+        // Refresh status — this is cheap and acts as the keepalive signal.
+        await fetchSandboxStatus()
+      } catch {
+        // ignore
+      }
+    }
+
+    const interval = window.setInterval(ping, SANDBOX_KEEPALIVE_MS)
+    return () => window.clearInterval(interval)
+  }, [fetchSandboxStatus])
+
+  // ── Tab visibility: wake on return, grace-sleep when backgrounded ─────────
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const clearBgGrace = () => {
+      if (bgGraceTimerRef.current !== null) {
+        window.clearTimeout(bgGraceTimerRef.current)
+        bgGraceTimerRef.current = null
       }
     }
 
     const onVisibility = () => {
       if (document.visibilityState === "hidden") {
-        // Tab moved to background - start the 2-min idle countdown.
-        resetIdleTimer()
+        // Tab went to background — start grace period before sleeping.
+        // If the user comes back within 30 min, we cancel and stay alive.
+        bgGraceTimerRef.current = window.setTimeout(() => {
+          sleepSandbox()
+        }, SANDBOX_BG_GRACE_MS)
       } else {
-        // User came back: refresh status, wake if needed, and reset timer.
+        // Tab came back — cancel grace sleep, refresh, wake if needed.
+        clearBgGrace()
         fetchSandboxStatus()
         wakeSandbox()
-        resetIdleTimer()
       }
     }
 
-    resetIdleTimer()
-    window.addEventListener("mousemove", onActivity, { passive: true })
-    window.addEventListener("keydown", onActivity)
-    window.addEventListener("click", onActivity)
-    window.addEventListener("touchstart", onActivity, { passive: true })
     document.addEventListener("visibilitychange", onVisibility)
-
     return () => {
-      window.removeEventListener("mousemove", onActivity)
-      window.removeEventListener("keydown", onActivity)
-      window.removeEventListener("click", onActivity)
-      window.removeEventListener("touchstart", onActivity)
       document.removeEventListener("visibilitychange", onVisibility)
-      if (idleTimerRef.current !== null) {
-        window.clearTimeout(idleTimerRef.current)
-        idleTimerRef.current = null
-      }
+      clearBgGrace()
     }
-  }, [fetchSandboxStatus, resetIdleTimer, sandboxStatus, wakeSandbox])
+  }, [fetchSandboxStatus, sleepSandbox, wakeSandbox])
 
-  // Listen for "user submitted a chat message" so we can wake the sandbox
-  // immediately rather than waiting for the agent's createSandbox tool call.
+  // ── Tab / window close: sleep sandbox immediately (keepalive fetch) ────────
+  // `pagehide` fires reliably on mobile + bfcache; `beforeunload` is the
+  // desktop fallback. fetch with keepalive:true survives page unload AND
+  // correctly sends session cookies (unlike sendBeacon).
   useEffect(() => {
     if (typeof window === "undefined") return
-    const onChatActivity = () => {
-      wakeSandbox()
-      resetIdleTimer()
+
+    const onClose = () => {
+      const status = sandboxStatusRef.current
+      if (!status || !status.sandboxId || status.status !== "running") return
+      // keepalive lets the browser finish the request even after the page unloads.
+      fetch("/api/sandboxes/sleep", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId: projectId }),
+        keepalive: true,
+      }).catch(() => {/* ignore - page is closing */})
     }
-    window.addEventListener("supergent:chat-message-sent", onChatActivity)
+
+    window.addEventListener("pagehide", onClose)
+    window.addEventListener("beforeunload", onClose)
     return () => {
-      window.removeEventListener("supergent:chat-message-sent", onChatActivity)
+      window.removeEventListener("pagehide", onClose)
+      window.removeEventListener("beforeunload", onClose)
     }
-  }, [resetIdleTimer, wakeSandbox])
+  }, [projectId])
+
+  // ── Wake sandbox when user sends a chat message ────────────────────────────
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const onChatActivity = () => wakeSandbox()
+    window.addEventListener("supergent:chat-message-sent", onChatActivity)
+    return () => window.removeEventListener("supergent:chat-message-sent", onChatActivity)
+  }, [wakeSandbox])
 
   const displayName = user.firstName || user.email || "User"
   const initials = displayName.slice(0, 2).toUpperCase()
@@ -511,41 +624,41 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
         }
       }}
     >
-      <div className="flex h-14 shrink-0 items-center justify-between border-white/10 border-b px-3">
+      <div className="flex h-11 shrink-0 items-center justify-between border-white/10 border-b px-3">
         <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-950 p-1">
           <Button
             aria-label="Preview"
-            className={`size-8 rounded-md ${activeTab === "preview" ? "bg-zinc-800 text-white" : "text-zinc-400"} hover:bg-zinc-800 hover:text-white`}
+            className={`size-7 rounded-md ${activeTab === "preview" ? "bg-zinc-800 text-white" : "text-zinc-400"} hover:bg-zinc-800 hover:text-white`}
             onClick={() => setActiveTab("preview")}
             size="icon"
             variant="ghost"
           >
-            <EyeIcon className="size-4" />
+            <EyeIcon className="size-3.5" />
           </Button>
           <Button
             aria-label="Files"
-            className={`size-8 rounded-md ${activeTab === "files" ? "bg-zinc-800 text-white" : "text-zinc-400"} hover:bg-zinc-800 hover:text-white`}
+            className={`size-7 rounded-md ${activeTab === "files" ? "bg-zinc-800 text-white" : "text-zinc-400"} hover:bg-zinc-800 hover:text-white`}
             onClick={() => setActiveTab("files")}
             size="icon"
             variant="ghost"
           >
-            <Code2Icon className="size-4" />
+            <Code2Icon className="size-3.5" />
           </Button>
           <Button
             aria-label="Data"
-            className={`size-8 rounded-md ${activeTab === "data" ? "bg-zinc-800 text-white" : "text-zinc-400"} hover:bg-zinc-800 hover:text-white`}
+            className={`size-7 rounded-md ${activeTab === "data" ? "bg-zinc-800 text-white" : "text-zinc-400"} hover:bg-zinc-800 hover:text-white`}
             onClick={() => setActiveTab("data")}
             size="icon"
             variant="ghost"
           >
-            <DatabaseIcon className="size-4" />
+            <DatabaseIcon className="size-3.5" />
           </Button>
         </div>
 
-        <div className="hidden min-w-0 items-center rounded-lg border border-white/10 bg-zinc-950 text-zinc-400 sm:flex">
+        <div className="hidden h-7 min-w-0 items-center rounded-lg border border-white/10 bg-zinc-950 text-zinc-400 sm:flex">
           <span
             aria-live="polite"
-            className="flex shrink-0 items-center gap-1.5 px-3 text-[11px] font-medium text-zinc-300"
+            className="flex shrink-0 items-center gap-1 px-2 text-[10px] font-medium text-zinc-300"
             title={
               sandboxStatus?.sandboxId
                 ? `Sandbox ${sandboxStatus.sandboxId}`
@@ -554,44 +667,43 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
                   : "No sandbox yet"
             }
           >
-            <span className="relative flex size-2">
+            <span className="relative flex size-1.5">
               {sandboxIndicator.pulse ? (
                 <span
                   className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${sandboxIndicator.color}`}
                 />
               ) : null}
               <span
-                className={`relative inline-flex size-2 rounded-full ${sandboxIndicator.color}`}
+                className={`relative inline-flex size-1.5 rounded-full ${sandboxIndicator.color}`}
               />
             </span>
             {sandboxIndicator.label}
           </span>
-          <Separator className="h-5 bg-white/10" orientation="vertical" />
-          <span className="max-w-[34vw] truncate px-3 font-mono text-xs">
+          <Separator className="h-4 bg-white/10" orientation="vertical" />
+          <span className="max-w-[180px] sm:max-w-[220px] truncate px-2 font-mono text-[10px]">
             {app?.previewUrl || app?.sandboxId || "Sandbox not ready"}
           </span>
-          <Separator className="h-5 bg-white/10" orientation="vertical" />
+          <Separator className="h-4 bg-white/10" orientation="vertical" />
           <Button
             aria-label="Open preview"
             asChild={Boolean(app?.previewUrl)}
-            className="size-8 text-zinc-400 hover:bg-zinc-900 hover:text-white"
+            className="size-7 text-zinc-400 hover:bg-zinc-900 hover:text-white"
             disabled={!app?.previewUrl}
             size="icon"
             variant="ghost"
           >
             {app?.previewUrl ? (
               <Link href={app.previewUrl} target="_blank">
-                <ExternalLinkIcon className="size-4" />
+                <ExternalLinkIcon className="size-3.5" />
               </Link>
             ) : (
-              <ExternalLinkIcon className="size-4" />
+              <ExternalLinkIcon className="size-3.5" />
             )}
           </Button>
           <Button
             aria-label="Refresh app state"
-            className="size-8 text-zinc-400 hover:bg-zinc-900 hover:text-white"
+            className="size-7 text-zinc-400 hover:bg-zinc-900 hover:text-white"
             onClick={() => {
-              loadApp()
               fetchSandboxStatus()
               if (
                 sandboxStatus?.status !== "running" &&
@@ -603,7 +715,7 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
             size="icon"
             variant="ghost"
           >
-            <RefreshCwIcon className="size-4" />
+            <RefreshCwIcon className="size-3.5" />
           </Button>
         </div>
 
@@ -619,34 +731,91 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
 
   return (
     <div className="dark flex h-svh flex-col overflow-hidden bg-black text-white">
-      <header className="flex h-11 shrink-0 items-center justify-between border-white/10 border-b bg-black px-3 sm:px-4">
+      <header className="relative flex h-11 shrink-0 items-center justify-between border-white/10 border-b bg-black px-3 sm:px-4">
         <div className="flex min-w-0 items-center gap-2">
           <Link className="flex shrink-0 items-center gap-2" href="/">
+            <Image src="/logo.png" alt="Supergent Logo" width={20} height={20} className="object-contain" />
             <span className="text-sm font-semibold tracking-tight">Supergent</span>
           </Link>
+        </div>
 
-          <div className="hidden min-w-0 items-center gap-2 text-xs md:flex">
-            <span className="inline-flex size-4 items-center justify-center rounded-full border border-dashed border-zinc-500">
-              <SparklesIcon className="size-2.5 text-zinc-400" />
-            </span>
-            <span className="text-zinc-400">Drafts</span>
-            <span className="text-zinc-700">/</span>
-            <button className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-zinc-200 transition hover:bg-white/10">
-              <span className="max-w-[28vw] truncate">{app?.title || `Project ${projectId}`}</span>
-              <ChevronDownIcon className="size-3.5 text-zinc-500" />
-            </button>
-          </div>
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden min-w-0 items-center gap-2 text-xs md:flex">
+          <button
+            className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-zinc-200 transition hover:bg-white/10"
+            onClick={() => {
+              setRenameValue(app?.title || "")
+              setRenameDialogOpen(true)
+            }}
+            title="Click to rename"
+          >
+            <span className="max-w-[28vw] truncate">{app?.title || `Project ${projectId}`}</span>
+            <PencilIcon className="size-3 text-zinc-600 hover:text-zinc-300" />
+          </button>
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          <Button aria-label="More actions" className="size-7 border-white/15 bg-zinc-950 text-zinc-200 hover:bg-zinc-900" size="icon" variant="outline">
-            <MoreHorizontalIcon className="size-3.5" />
+          <Button
+            aria-label={app?.isFavorite ? "Remove from favorites" : "Add to favorites"}
+            className="size-7 border-white/15 bg-zinc-950 text-zinc-200 hover:bg-zinc-900"
+            size="icon"
+            variant="outline"
+            onClick={app?.isFavorite ? () => setUnfavoriteDialogOpen(true) : toggleFavorite}
+            disabled={favoriteMutating}
+          >
+            <StarIcon className={`size-3.5 ${app?.isFavorite ? "fill-amber-400 text-amber-400" : ""}`} />
           </Button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button aria-label="More actions" className="size-7 border-white/15 bg-zinc-950 text-zinc-200 hover:bg-zinc-900" size="icon" variant="outline">
+                <MoreHorizontalIcon className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48 bg-zinc-950 border border-white/10 text-white">
+              <DropdownMenuItem
+                onClick={app?.isFavorite ? () => setUnfavoriteDialogOpen(true) : toggleFavorite}
+                className="cursor-pointer hover:bg-white/10 focus:bg-white/10 text-white focus:text-white"
+              >
+                {app?.isFavorite ? (
+                  <>
+                    <StarIcon className="mr-2 size-4 fill-amber-400 text-amber-400" />
+                    <span>Remove from favorites</span>
+                  </>
+                ) : (
+                  <>
+                    <StarIcon className="mr-2 size-4" />
+                    <span>Add to favorites</span>
+                  </>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  setRenameValue(app?.title || "")
+                  setRenameDialogOpen(true)
+                }}
+                className="cursor-pointer hover:bg-white/10 focus:bg-white/10 text-white focus:text-white"
+              >
+                <PencilIcon className="mr-2 size-4" />
+                <span>Rename</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => setDeleteDialogOpen(true)}
+                className="cursor-pointer text-red-400 focus:text-red-400 hover:bg-red-500/10 focus:bg-red-500/10"
+              >
+                <Trash2Icon className="mr-2 size-4" />
+                <span>Delete project</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {credits !== null && (
-            <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-              <SparklesIcon className="size-3" />
+            <Link
+              href="/upgrade"
+              className="hidden sm:inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-500 hover:bg-amber-500/20 transition-colors"
+            >
+              <Coins className="size-3" />
               {credits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
+            </Link>
           )}
           <Button asChild={Boolean(app?.previewUrl)} className="hidden h-7 gap-1.5 bg-white px-3 text-xs text-black hover:bg-zinc-200 sm:inline-flex" disabled={!app?.previewUrl} size="sm">
             {app?.previewUrl ? (
@@ -698,13 +867,120 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
               <MoreHorizontalIcon className="size-4" />
             </Button>
           </div>
-          <div className="min-h-0 flex-1 [&_[data-slot=input-group]]:border-white/10 [&_[data-slot=input-group]]:bg-zinc-900 [&_[data-slot=input-group]]:text-white [&_textarea]:min-h-12 [&_*]:scrollbar-hide">
-            <ChatbotDemo chatId={projectId} />
+          <div className="flex min-h-0 flex-1 flex-col [&_[data-slot=input-group]]:border-white/10 [&_[data-slot=input-group]]:bg-zinc-900 [&_[data-slot=input-group]]:text-white [&_textarea]:min-h-12 [&_*]:scrollbar-hide">
+            <ChatbotDemo chatId={projectId} userId={user.id} />
           </div>
         </aside>
 
         {!isRight ? workspacePanel : null}
       </main>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="bg-zinc-950 border border-white/10 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-semibold text-white">Delete Project</DialogTitle>
+            <DialogDescription className="text-sm text-zinc-400">
+              Are you sure you want to delete this project? This will permanently delete all messages, sandbox files, and saved snapshots. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={deleteLoading}
+              className="text-zinc-400 hover:text-white hover:bg-white/10 border-white/10"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleteLoading}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {deleteLoading ? "Deleting..." : "Delete Project"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={unfavoriteDialogOpen} onOpenChange={setUnfavoriteDialogOpen}>
+        <DialogContent className="bg-zinc-950 border border-white/10 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-semibold text-white">Remove from Favorites</DialogTitle>
+            <DialogDescription className="text-sm text-zinc-400">
+              Are you sure you want to remove this project from your favorites?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setUnfavoriteDialogOpen(false)}
+              disabled={favoriteMutating}
+              className="text-zinc-400 hover:text-white hover:bg-white/10 border-white/10"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                await toggleFavorite()
+                setUnfavoriteDialogOpen(false)
+              }}
+              disabled={favoriteMutating}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {favoriteMutating ? "Removing..." : "Remove"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={renameDialogOpen} onOpenChange={(open) => { if (!open) setRenameDialogOpen(false) }}>
+        <DialogContent className="bg-zinc-950 border border-white/10 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-semibold text-white">Rename Project</DialogTitle>
+            <DialogDescription className="text-sm text-zinc-400">
+              Enter a new name for this project.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Input
+              autoFocus
+              className="bg-zinc-900 border-white/10 text-white placeholder:text-zinc-500 focus-visible:ring-white/20"
+              disabled={renameLoading}
+              maxLength={64}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  handleRename()
+                }
+              }}
+              placeholder="Project name"
+              value={renameValue}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setRenameDialogOpen(false)}
+              disabled={renameLoading}
+              className="text-zinc-400 hover:text-white hover:bg-white/10 border-white/10"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleRename}
+              disabled={renameLoading || !renameValue.trim()}
+              className="bg-white text-black hover:bg-zinc-200"
+            >
+              {renameLoading ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+
   )
 }

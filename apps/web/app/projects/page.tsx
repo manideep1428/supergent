@@ -43,7 +43,7 @@ export default async function ProjectsPage() {
       <div className="flex min-h-svh items-center justify-center p-6">
         <div className="flex max-w-md w-full flex-col gap-6 text-center">
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight">Emergent AI</h1>
+            <h1 className="text-3xl font-bold tracking-tight">Supergent AI</h1>
             <p className="text-muted-foreground text-sm leading-relaxed">
               Sign in to see your projects.
             </p>

@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { Geist, Geist_Mono, Nunito_Sans } from "next/font/google"
 
 import "@workspace/ui/globals.css"
@@ -6,6 +7,15 @@ import { cn } from "@workspace/ui/lib/utils";
 import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 import { Toaster } from "@workspace/ui/components/sonner"
 import { TooltipProvider } from "@workspace/ui/components/tooltip"
+import { ConvexClientProvider } from "@/components/convex-provider"
+
+export const metadata: Metadata = {
+  title: "Supergent",
+  description: "Personal AI Agent Sandbox",
+  icons: {
+    icon: "/logo.png",
+  },
+}
 
 const nunitoSans = Nunito_Sans({subsets:['latin'],variable:'--font-sans'})
 
@@ -28,9 +38,11 @@ export default function RootLayout({
       <body className="h-svh overflow-hidden">
         <ThemeProvider>
           <AuthKitProvider>
-            <TooltipProvider>
-              {children}
-            </TooltipProvider>
+            <ConvexClientProvider>
+              <TooltipProvider>
+                {children}
+              </TooltipProvider>
+            </ConvexClientProvider>
           </AuthKitProvider>
           <Toaster />
         </ThemeProvider>

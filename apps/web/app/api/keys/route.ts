@@ -2,6 +2,8 @@ import { withAuth } from "@workos-inc/authkit-nextjs";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "backend/convex/_generated/api";
 
+export const dynamic = "force-dynamic";
+
 type KeysPayload = {
   vercelKey: string;
   openaiKey: string;

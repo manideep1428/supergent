@@ -29,6 +29,8 @@ export default defineSchema({
     content: v.string(),
     modelId: v.union(v.string(), v.null()),
     status: v.union(v.literal("saved"), v.literal("streaming"), v.literal("error")),
+    reasoning: v.optional(v.string()),
+    toolEvents: v.optional(v.array(v.any())),
     createdAt: v.number(),
   })
     .index("by_chatId_and_createdAt", ["chatId", "createdAt"])

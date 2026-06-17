@@ -1,5 +1,6 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { AppSidebar } from "@/components/app-sidebar"
 import { Badge } from "@workspace/ui/components/badge"
@@ -25,7 +26,6 @@ import {
   Check,
   CircleHelp,
   Crown,
-  Gauge,
   ShieldCheck,
   Sparkles,
   Zap,
@@ -93,7 +93,6 @@ const monthlyPlans: Plan[] = [
       "10-day access",
       "5 included credits",
       "Ads included",
-      "Checkout through Polar",
       "Option to upgrade to Pro",
     ],
   },
@@ -194,7 +193,15 @@ const annualPlans: Plan[] = [
   },
 ]
 
-function PlanAction({ plan }: { plan: Plan }) {
+function PlanAction({ plan, isActive, balance }: { plan: Plan; isActive?: boolean; balance?: number }) {
+  if (isActive) {
+    return (
+      <Button className="w-full gap-2 border-emerald-500/20 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/10 cursor-default" variant="outline" disabled>
+        Current Plan {balance !== undefined ? `(${balance.toFixed(2)} credits)` : ""}
+      </Button>
+    )
+  }
+
   if (plan.href) {
     return (
       <Button asChild className="w-full gap-2" variant={plan.featured ? "default" : "secondary"}>
@@ -217,13 +224,15 @@ function PlanAction({ plan }: { plan: Plan }) {
   )
 }
 
-function PlanCard({ plan }: { plan: Plan }) {
+function PlanCard({ plan, isActive, balance }: { plan: Plan; isActive?: boolean; balance?: number }) {
   return (
     <Card
       className={
-        plan.featured
-          ? "relative flex h-full flex-col border-primary/55 bg-card shadow-lg shadow-primary/10"
-          : "relative flex h-full flex-col border-border/80 bg-card shadow-sm"
+        isActive
+          ? "relative flex h-full flex-col border-emerald-500/50 bg-emerald-500/[0.01] shadow-lg shadow-emerald-500/5"
+          : plan.featured
+            ? "relative flex h-full flex-col border-primary/55 bg-card shadow-lg shadow-primary/10"
+            : "relative flex h-full flex-col border-border/80 bg-card shadow-sm"
       }
     >
       <CardHeader className="space-y-4">
@@ -236,7 +245,11 @@ function PlanCard({ plan }: { plan: Plan }) {
             ) : null}
             <CardTitle className="text-xl font-semibold tracking-tight">{plan.title}</CardTitle>
           </div>
-          {plan.badge || plan.savings ? (
+          {isActive ? (
+            <Badge className="rounded-full bg-emerald-500/10 px-3 py-1 text-emerald-400 border border-emerald-500/20 uppercase tracking-wider" variant="secondary">
+              Active
+            </Badge>
+          ) : plan.savings || plan.badge ? (
             <Badge className="rounded-full bg-cyan-50 px-3 py-1 text-cyan-700 hover:bg-cyan-50" variant="secondary">
               {plan.savings ?? plan.badge}
             </Badge>
@@ -261,7 +274,7 @@ function PlanCard({ plan }: { plan: Plan }) {
       </CardHeader>
 
       <CardContent className="flex-1 space-y-5">
-        <PlanAction plan={plan} />
+        <PlanAction plan={plan} isActive={isActive} balance={balance} />
 
         <div className="space-y-3">
           <p className="text-sm font-medium">{plan.includedLabel}</p>
@@ -289,19 +302,45 @@ function TrustItem({
   value: string
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-background px-4 py-3">
-      <div className="flex size-9 items-center justify-center rounded-md bg-cyan-50 text-cyan-700">
-        <Icon size={18} />
+    <div className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-background px-3 py-2">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-cyan-50 text-cyan-700">
+        <Icon size={14} />
       </div>
       <div>
-        <p className="text-sm font-medium">{value}</p>
-        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-xs font-semibold leading-tight">{value}</p>
+        <p className="text-[10px] leading-tight text-muted-foreground">{label}</p>
       </div>
     </div>
   )
 }
 
 export default function UpgradePage() {
+  const [credits, setCredits] = useState<{ balance: number; lifetimeIssued: number } | null>(null)
+
+  useEffect(() => {
+    fetch("/api/credits", { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.credits) setCredits(data.credits)
+      })
+      .catch(() => { })
+  }, [])
+
+  const getActivePlan = (credits: { balance: number; lifetimeIssued: number }) => {
+    if (credits.lifetimeIssued >= 1000) {
+      return { name: "Unlimited Plan", desc: "unlimited credits" }
+    }
+    if (credits.lifetimeIssued >= 100) {
+      return { name: "Pro Plan", desc: "100 credits per month" }
+    }
+    if (credits.lifetimeIssued >= 5) {
+      return { name: "Trial Plan", desc: "5 included credits" }
+    }
+    return null
+  }
+
+  const activePlan = credits ? getActivePlan(credits) : null
+
   return (
     <SidebarProvider>
       <AppSidebar />
@@ -316,11 +355,8 @@ export default function UpgradePage() {
 
         <div className="flex-1 overflow-y-auto px-4 py-8 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-7xl space-y-8">
-            <section className="grid gap-6 lg:grid-cols-[1fr_360px] lg:items-end">
+            <section className="grid gap-6 lg:grid-cols-[1fr_280px] lg:items-end">
               <div className="space-y-5">
-                <Badge className="rounded-full bg-cyan-50 px-3 py-1 text-cyan-700 hover:bg-cyan-50" variant="secondary">
-                  Polar checkout ready
-                </Badge>
                 <div className="max-w-3xl space-y-3">
                   <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">Choose the right AI workspace plan</h1>
                   <p className="text-base leading-7 text-muted-foreground">
@@ -329,14 +365,13 @@ export default function UpgradePage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
                 <TrustItem icon={BadgeCheck} value="20% annual discount" label="Applied to paid yearly plans" />
-                <TrustItem icon={Gauge} value="Sandbox checkout" label="Uses Polar sandbox for testing" />
-                <TrustItem icon={Sparkles} value="Upgrade anytime" label="Monthly or annual paid plans" />
+                <TrustItem icon={Zap} value="Upgrade anytime" label="Monthly or annual paid plans" />
               </div>
             </section>
 
-            <Tabs defaultValue="monthly" className="space-y-6">
+            <Tabs defaultValue="monthly" className="space-y-6 rounded-none">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold tracking-tight">Pricing plans</h2>
@@ -344,32 +379,53 @@ export default function UpgradePage() {
                     Annual paid plans are calculated at 12 months minus 20%.
                   </p>
                 </div>
-                <TabsList className="grid w-full grid-cols-2 rounded-full bg-muted p-1 sm:w-[280px]">
-                  <TabsTrigger value="monthly" className="rounded-full">Monthly</TabsTrigger>
-                  <TabsTrigger value="annual" className="rounded-full">Annual - Save 20%</TabsTrigger>
+                <TabsList className="grid w-full grid-cols-2 bg-muted p-1 sm:w-[280px]">
+                  <TabsTrigger value="monthly">Monthly</TabsTrigger>
+                  <TabsTrigger value="annual">Annual - Save 20%</TabsTrigger>
                 </TabsList>
               </div>
 
               <TabsContent value="monthly" className="mt-0">
                 <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                  {monthlyPlans.map((plan) => (
-                    <PlanCard key={plan.title} plan={plan} />
-                  ))}
+                  {monthlyPlans.map((plan) => {
+                    const isActive = activePlan
+                      ? activePlan.name.toLowerCase().includes(plan.title.toLowerCase())
+                      : plan.title === "Starter";
+                    return (
+                      <PlanCard
+                        key={plan.title}
+                        plan={plan}
+                        isActive={isActive}
+                        balance={isActive ? credits?.balance : undefined}
+                      />
+                    );
+                  })}
                 </div>
               </TabsContent>
 
               <TabsContent value="annual" className="mt-0">
                 <div className="grid gap-5 lg:grid-cols-3">
-                  {annualPlans.map((plan) => (
-                    <PlanCard key={plan.title} plan={plan} />
-                  ))}
+                  {annualPlans.map((plan) => {
+                    const firstWord = plan.title.split(" ")[0];
+                    const isActive = activePlan && firstWord
+                      ? activePlan.name.toLowerCase().includes(firstWord.toLowerCase())
+                      : false;
+                    return (
+                      <PlanCard
+                        key={plan.title}
+                        plan={plan}
+                        isActive={isActive}
+                        balance={isActive ? credits?.balance : undefined}
+                      />
+                    );
+                  })}
                 </div>
               </TabsContent>
             </Tabs>
 
-            <Card className="border-border/80 bg-muted/30 shadow-none">
-              <CardFooter className="flex flex-col gap-3 p-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-center">
-                <span className="flex items-center gap-2">
+            <Card className="bg-muted">
+              <CardFooter className="flex flex-col p-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-center">
+                <span className="flex items-center">
                   <CircleHelp size={16} />
                   FAQs
                 </span>

@@ -3,6 +3,8 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "backend/convex/_generated/api";
 import { Sandbox } from "@vercel/sandbox";
 
+export const dynamic = "force-dynamic";
+
 function getConvexClient() {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL;
   if (!url) {

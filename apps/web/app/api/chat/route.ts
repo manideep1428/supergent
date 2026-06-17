@@ -1,4 +1,4 @@
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createVertex } from "@ai-sdk/google-vertex";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGateway } from "@ai-sdk/gateway";
@@ -12,25 +12,14 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "backend/convex/_generated/api";
 import { createSandboxTools, type ToolEvent } from "@/lib/sandbox-tools";
 import { getModelEntry, type ModelEntry } from "@/lib/models";
+import { SYSTEM_PROMPT } from "./prompt";
+
+export const dynamic = "force-dynamic";
 
 type ClientMessage = {
   from: "user" | "assistant";
   content: string;
 };
-
-const SYSTEM_PROMPT = `You are the Emergent app-building agent running with Vercel Sandbox tools.
-
-Use the sandbox workflow:
-1. Create exactly one sandbox per chat with createSandbox. If the tool reports the sandbox was created from a saved snapshot, the previously generated files and installed dependencies are already present - skip generateFiles and pnpm install entirely. Otherwise generate files and install dependencies normally.
-2. Generate complete runnable files for the requested app (only when there is no snapshot).
-3. Install dependencies with pnpm (only when there is no snapshot).
-4. Start the dev server with pnpm run dev in the background using runCommand with wait false.
-5. Get the sandbox URL for the preview port.
-6. Once the user confirms the app works, you MAY call saveSnapshot to persist a 30-day snapshot. Calling saveSnapshot stops the running sandbox, so do not call it while the user still expects to interact with the preview in the same session.
-
-Prefer Next.js for new frontend apps. Use next@16.0.10 or newer, app/layout.tsx, app/page.tsx, app/globals.css, and next.config.js or next.config.mjs. Never generate lock files, node_modules, .next, or build artifacts. Use relative paths and do not use cd or shell chaining.
-
-Keep user-facing replies short and tell the user what was created or what failed.`;
 
 type ResolvedKeys = {
   vercelKey: string | null;
@@ -81,7 +70,7 @@ async function resolveKeysForUser(userId: string): Promise<ResolvedKeys> {
     vercelKey: process.env.VERCEL_API_KEY || process.env.AI_GATEWAY_API_KEY || null,
     openaiKey: process.env.OPENAI_API_KEY || null,
     anthropicKey: process.env.ANTHROPIC_API_KEY || null,
-    googleKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY || null,
+    googleKey: process.env.GOOGLE_VERTEX_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || null,
     deepseekKey: process.env.DEEPSEEK_API_KEY || null,
     mistralKey: process.env.MISTRAL_API_KEY || null,
     groqKey: process.env.GROQ_API_KEY || null,
@@ -120,8 +109,24 @@ function pickAiModel(entry: ModelEntry, keys: ResolvedKeys): LanguageModel {
   if (entry.directId && entry.chef === "anthropic" && keys.anthropicKey) {
     return createAnthropic({ apiKey: keys.anthropicKey })(entry.directId);
   }
-  if (entry.directId && entry.chef === "google" && keys.googleKey) {
-    return createGoogleGenerativeAI({ apiKey: keys.googleKey })(entry.directId);
+  if (entry.directId && entry.chef === "google") {
+    if (keys.googleKey) {
+      return createVertex({ location: "global", project: "project-bc5ac9e3-64ad-4974-961", apiKey: keys.googleKey })(entry.directId);
+    }
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      return createVertex()(entry.directId);
+    }
+    if (process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+      return createVertex({
+        project: process.env.GOOGLE_PROJECT_ID,
+        googleAuthOptions: {
+          credentials: {
+            client_email: process.env.GOOGLE_CLIENT_EMAIL,
+            private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+          },
+        },
+      })(entry.directId);
+    }
   }
   if (entry.directId && entry.chef === "deepseek" && keys.deepseekKey) {
     return createDeepSeek({ apiKey: keys.deepseekKey })(entry.directId);
@@ -177,6 +182,82 @@ async function saveChatMessage({
     });
   } catch (error) {
     console.error("Failed to save chat message to Convex", error);
+  }
+}
+
+/**
+ * Save a placeholder assistant message with "streaming" status BEFORE the
+ * AI stream starts. Returns the Convex document ID so we can update it in
+ * onFinish. This guarantees the DB always has an assistant row — even if the
+ * user refreshes mid-stream — which prevents the "auto-resend" loop.
+ */
+async function saveStreamingPlaceholder({
+  chatId,
+  userId,
+  userEmail,
+  modelId,
+}: {
+  chatId: string;
+  userId: string;
+  userEmail: string | null;
+  modelId: string | null;
+}): Promise<string | null> {
+  const convex = getConvexClient();
+  if (!convex) return null;
+
+  try {
+    const id = await convex.mutation(api.chats.addMessage, {
+      chatId,
+      userId,
+      userEmail,
+      role: "assistant" as const,
+      content: "",
+      modelId,
+      status: "streaming" as const,
+    });
+    return id as unknown as string;
+  } catch (error) {
+    console.error("Failed to save streaming placeholder to Convex", error);
+    return null;
+  }
+}
+
+/**
+ * Update an existing message's content and status (used to finalise the
+ * streaming placeholder once the AI finishes generating).
+ */
+async function updateChatMessage({
+  messageId,
+  chatId,
+  userId,
+  content,
+  status,
+  reasoning,
+  toolEvents,
+}: {
+  messageId: string;
+  chatId: string;
+  userId: string;
+  content: string;
+  status: "saved" | "streaming" | "error";
+  reasoning?: string;
+  toolEvents?: any[];
+}) {
+  const convex = getConvexClient();
+  if (!convex) return;
+
+  try {
+    await convex.mutation(api.chats.updateMessage, {
+      messageId: messageId as any,
+      chatId,
+      userId,
+      content,
+      status,
+      reasoning,
+      toolEvents,
+    });
+  } catch (error) {
+    console.error("Failed to update chat message in Convex", error);
   }
 }
 
@@ -311,6 +392,34 @@ export async function POST(req: Request) {
     const resolvedModelId = typeof modelId === "string" ? modelId : null;
     const modelEntry = getModelEntry(resolvedModelId);
 
+    const convex = getConvexClient();
+    if (!convex) {
+      return new Response(JSON.stringify({ error: "Database configuration error" }), { status: 500 });
+    }
+
+    const userCredits = await convex.query(api.credits.getCredits, { userId: user.id });
+    const isFreePlan = !userCredits || !userCredits.initialized || userCredits.lifetimeIssued <= 5;
+    const isFreeModel = modelEntry.id === "gemini-3.5-flash" || modelEntry.id === "deepseek-v4-flash";
+
+    if (isFreePlan && !isFreeModel) {
+      return new Response(
+        JSON.stringify({
+          error: `Only Gemini 3.5 Flash and DeepSeek V4 Flash are allowed on the Free Plan. Please upgrade to Pro to use ${modelEntry.name}.`,
+        }),
+        { status: 403 },
+      );
+    }
+
+    const balance = userCredits?.balance ?? 0;
+    if (balance <= 0) {
+      return new Response(
+        JSON.stringify({
+          error: "You have run out of credits. Please purchase more credits or upgrade to use this model.",
+        }),
+        { status: 402 },
+      );
+    }
+
     if (latestUserMessage) {
       await saveChatMessage({
         chatId,
@@ -327,6 +436,9 @@ export async function POST(req: Request) {
     let aiModel: LanguageModel;
     try {
       aiModel = pickAiModel(modelEntry, keys);
+      if (modelEntry.chef === "google" || modelEntry.id === "gemini-3.5-flash") {
+        console.log(`[Gemini AI Event] Request started. User: ${user.id}, Chat: ${chatId}, Model: ${modelEntry.id}`);
+      }
     } catch (error: any) {
       return new Response(
         JSON.stringify({
@@ -372,6 +484,81 @@ export async function POST(req: Request) {
       enqueue(JSON.stringify({ type: "error", value: errorText }));
     };
 
+    const writeReasoning = (
+      kind: "start" | "delta" | "end",
+      text: string,
+    ) => {
+      enqueue(JSON.stringify({ type: `reasoning-${kind}`, value: text }));
+    };
+
+    let accumulatedText = "";
+    let currentReasoning = "";
+    const toolEvents: ToolEvent[] = [];
+    let hasError = false;
+    let isFinished = false;
+
+    let lastSavedText = "";
+    let lastSavedReasoning = "";
+    let lastSavedToolEventsStr = "";
+    let lastSavedTime = Date.now();
+    let isUpdating = false;
+
+    const checkAndSave = async (force = false) => {
+      if (!streamingMessageId || isFinished) return;
+
+      const now = Date.now();
+      const textChanged = accumulatedText !== lastSavedText;
+      const reasoningChanged = currentReasoning !== lastSavedReasoning;
+      const currentToolEventsStr = JSON.stringify(toolEvents);
+      const toolEventsChanged = currentToolEventsStr !== lastSavedToolEventsStr;
+
+      if (
+        force ||
+        toolEventsChanged ||
+        ((textChanged || reasoningChanged) && now - lastSavedTime > 800)
+      ) {
+        if (isUpdating && !force) return;
+        isUpdating = true;
+        try {
+          await updateChatMessage({
+            messageId: streamingMessageId,
+            chatId,
+            userId: user.id,
+            content: accumulatedText.trim(),
+            status: "streaming",
+            reasoning: currentReasoning || undefined,
+            toolEvents: toolEvents.length > 0 ? toolEvents : undefined,
+          });
+          lastSavedText = accumulatedText;
+          lastSavedReasoning = currentReasoning;
+          lastSavedToolEventsStr = currentToolEventsStr;
+          lastSavedTime = now;
+        } catch (dbError) {
+          console.error("Failed to update real-time message", dbError);
+        } finally {
+          isUpdating = false;
+        }
+      }
+    };
+
+    const saveFinalState = async () => {
+      if (!streamingMessageId || isFinished) return;
+      isFinished = true;
+      try {
+        await updateChatMessage({
+          messageId: streamingMessageId,
+          chatId,
+          userId: user.id,
+          content: accumulatedText.trim() || (hasError ? "⚠️ Generation error" : "(empty response)"),
+          status: hasError ? "error" : "saved",
+          reasoning: currentReasoning || undefined,
+          toolEvents: toolEvents.length > 0 ? toolEvents : undefined,
+        });
+      } catch (dbError) {
+        console.error("Failed to update final message", dbError);
+      }
+    };
+
     const tools = createSandboxTools({
       chatId,
       model: aiModel,
@@ -385,7 +572,16 @@ export async function POST(req: Request) {
           generatedFiles: update.generatedFiles,
           status: update.status,
         }),
-      onToolEvent: (event) => writeEvent(event),
+      onToolEvent: (event) => {
+        writeEvent(event);
+        const idx = toolEvents.findIndex((e) => e.id === event.id);
+        if (idx === -1) {
+          toolEvents.push(event);
+        } else {
+          toolEvents[idx] = event;
+        }
+        checkAndSave(true);
+      },
       getActiveRuntime: () =>
         getActiveRuntimeForChat({ chatId, userId: user.id }),
       saveSnapshot: ({ snapshotId, expiresAt }) =>
@@ -397,6 +593,15 @@ export async function POST(req: Request) {
         }),
     });
 
+    // Save a streaming placeholder so the DB always has an assistant row.
+    // If the user refreshes mid-stream, the placeholder prevents auto-resend.
+    const streamingMessageId = await saveStreamingPlaceholder({
+      chatId,
+      userId: user.id,
+      userEmail: user.email || null,
+      modelId: modelEntry.id,
+    });
+
     const result = streamText({
       model: aiModel,
       messages: formattedMessages,
@@ -404,31 +609,55 @@ export async function POST(req: Request) {
       stopWhen: stepCountIs(20),
       tools,
       onFinish: async ({ text, usage }) => {
-        await saveChatMessage({
-          chatId,
-          userId: user.id,
-          userEmail: user.email || null,
-          role: "assistant",
-          content: text,
-          modelId: modelEntry.id,
-        });
+        if (modelEntry.chef === "google" || modelEntry.id === "gemini-3.5-flash") {
+          console.log(`[Gemini AI Event] Request finished. User: ${user.id}, Chat: ${chatId}, Model: ${modelEntry.id}, Usage:`, usage, `Text Length: ${text?.length ?? 0}`);
+        }
+        // Only fallback to saveChatMessage if we don't have a streaming placeholder
+        if (!streamingMessageId) {
+          await saveChatMessage({
+            chatId,
+            userId: user.id,
+            userEmail: user.email || null,
+            role: "assistant",
+            content: text,
+            modelId: modelEntry.id,
+          });
+        }
 
-        // AI SDK v6 typically returns { inputTokens, outputTokens, totalTokens };
+        // AI SDK v6 returns { inputTokens, outputTokens, totalTokens };
         // older runtimes used { promptTokens, completionTokens }. Read both
         // defensively and skip the ledger entry if we got nothing usable.
         const usageAny = usage as
           | {
+            inputTokens?: number
+            outputTokens?: number
+            promptTokens?: number
+            completionTokens?: number
+          }
+          | null
+          | undefined;
+        let inputTokens =
+          usageAny?.inputTokens ?? usageAny?.promptTokens ?? 0;
+        let outputTokens =
+          usageAny?.outputTokens ?? usageAny?.completionTokens ?? 0;
+
+        // Fallback: if onFinish gave us 0s, try the awaitable result.usage promise
+        if (inputTokens === 0 && outputTokens === 0) {
+          try {
+            const resolvedUsage = await result.usage as {
               inputTokens?: number
               outputTokens?: number
               promptTokens?: number
               completionTokens?: number
-            }
-          | null
-          | undefined;
-        const inputTokens =
-          usageAny?.inputTokens ?? usageAny?.promptTokens ?? 0;
-        const outputTokens =
-          usageAny?.outputTokens ?? usageAny?.completionTokens ?? 0;
+            } | null | undefined;
+            inputTokens = resolvedUsage?.inputTokens ?? resolvedUsage?.promptTokens ?? 0;
+            outputTokens = resolvedUsage?.outputTokens ?? resolvedUsage?.completionTokens ?? 0;
+          } catch {
+            // result.usage not available, skip
+          }
+        }
+
+        console.log(`[usage] model=${modelEntry.id} input=${inputTokens} output=${outputTokens}`);
 
         if (inputTokens > 0 || outputTokens > 0) {
           const convex = getConvexClient();
@@ -471,7 +700,25 @@ export async function POST(req: Request) {
                   (part as unknown as { textDelta?: string; text?: string })
                     .text ??
                   "";
+                accumulatedText += delta;
                 writeText(delta);
+                checkAndSave();
+              } else if (part.type === "reasoning-start") {
+                writeReasoning("start", "");
+              } else if (part.type === "reasoning-delta") {
+                const delta =
+                  (part as unknown as { text?: string; textDelta?: string })
+                    .text ??
+                  (part as unknown as { text?: string; textDelta?: string })
+                    .textDelta ??
+                  "";
+                if (delta) {
+                  currentReasoning += delta;
+                  writeReasoning("delta", delta);
+                  checkAndSave();
+                }
+              } else if (part.type === "reasoning-end") {
+                writeReasoning("end", "");
               } else if (part.type === "error") {
                 const err = (part as unknown as { error?: unknown }).error;
                 writeError(
@@ -480,12 +727,17 @@ export async function POST(req: Request) {
               }
             }
           } catch (error: any) {
+            hasError = true;
             writeError(error?.message ?? String(error));
           } finally {
             controller.close();
             pushChunk = null;
+            await saveFinalState();
           }
         })();
+      },
+      cancel() {
+        saveFinalState();
       },
     });
 
@@ -494,6 +746,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/x-ndjson; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
+        ...(streamingMessageId ? { "x-message-id": streamingMessageId } : {}),
       },
     });
   } catch (error: any) {

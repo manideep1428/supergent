@@ -81,63 +81,63 @@ export const ModelSelectorSeparator = (props: ModelSelectorSeparatorProps) => (
 
 export type ModelSelectorLogoProps = Omit<ComponentProps<"img">, "src" | "alt"> & {
   provider:
-    | "moonshotai-cn"
-    | "lucidquery"
-    | "moonshotai"
-    | "zai-coding-plan"
-    | "alibaba"
-    | "xai"
-    | "vultr"
-    | "nvidia"
-    | "upstage"
-    | "groq"
-    | "github-copilot"
-    | "mistral"
-    | "vercel"
-    | "nebius"
-    | "deepseek"
-    | "alibaba-cn"
-    | "google-vertex-anthropic"
-    | "venice"
-    | "chutes"
-    | "cortecs"
-    | "github-models"
-    | "togetherai"
-    | "azure"
-    | "baseten"
-    | "huggingface"
-    | "opencode"
-    | "fastrouter"
-    | "google"
-    | "google-vertex"
-    | "cloudflare-workers-ai"
-    | "inception"
-    | "wandb"
-    | "openai"
-    | "zhipuai-coding-plan"
-    | "perplexity"
-    | "openrouter"
-    | "zenmux"
-    | "v0"
-    | "iflowcn"
-    | "synthetic"
-    | "deepinfra"
-    | "zhipuai"
-    | "submodel"
-    | "zai"
-    | "inference"
-    | "requesty"
-    | "morph"
-    | "lmstudio"
-    | "anthropic"
-    | "aihubmix"
-    | "fireworks-ai"
-    | "modelscope"
-    | "llama"
-    | "scaleway"
-    | "amazon-bedrock"
-    | "cerebras"
-    | (string & {})
+  | "moonshotai-cn"
+  | "lucidquery"
+  | "moonshotai"
+  | "zai-coding-plan"
+  | "alibaba"
+  | "xai"
+  | "vultr"
+  | "nvidia"
+  | "upstage"
+  | "groq"
+  | "github-copilot"
+  | "mistral"
+  | "vercel"
+  | "nebius"
+  | "deepseek"
+  | "alibaba-cn"
+  | "google-vertex-anthropic"
+  | "venice"
+  | "chutes"
+  | "cortecs"
+  | "github-models"
+  | "togetherai"
+  | "azure"
+  | "baseten"
+  | "huggingface"
+  | "opencode"
+  | "fastrouter"
+  | "google"
+  | "google-vertex"
+  | "cloudflare-workers-ai"
+  | "inception"
+  | "wandb"
+  | "openai"
+  | "zhipuai-coding-plan"
+  | "perplexity"
+  | "openrouter"
+  | "zenmux"
+  | "v0"
+  | "iflowcn"
+  | "synthetic"
+  | "deepinfra"
+  | "zhipuai"
+  | "submodel"
+  | "zai"
+  | "inference"
+  | "requesty"
+  | "morph"
+  | "lmstudio"
+  | "anthropic"
+  | "aihubmix"
+  | "fireworks-ai"
+  | "modelscope"
+  | "llama"
+  | "scaleway"
+  | "amazon-bedrock"
+  | "cerebras"
+  | (string & {})
 }
 
 export const ModelSelectorLogo = ({ provider, className, ...props }: ModelSelectorLogoProps) => (
@@ -169,7 +169,7 @@ export const ModelSelectorName = ({ className, ...props }: ModelSelectorNameProp
   <span className={cn("flex-1 truncate text-left", className)} {...props} />
 )
 
-import { CheckIcon } from "lucide-react"
+import { CheckIcon, Lock } from "lucide-react"
 import { useState } from "react"
 import { Button } from "@workspace/ui/components/button"
 
@@ -196,7 +196,7 @@ const models = [
     chefSlug: "openai",
     providers: ["openai"],
   },
-  
+
   // Anthropic
   {
     id: "claude-opus-4.7",
@@ -222,26 +222,13 @@ const models = [
 
   // Google
   {
-    id: "gemini-3.1-pro",
-    name: "Gemini 3.1 Pro",
+    id: "gemini-3.5-flash",
+    name: "Gemini 3.5 Flash",
     chef: "Google",
     chefSlug: "google",
     providers: ["google-vertex", "google"],
   },
-  {
-    id: "gemini-3-flash",
-    name: "Gemini 3 Flash",
-    chef: "Google",
-    chefSlug: "google",
-    providers: ["google-vertex", "google"],
-  },
-  {
-    id: "gemini-3-deep-think",
-    name: "Gemini 3 Deep Think",
-    chef: "Google",
-    chefSlug: "google",
-    providers: ["google-vertex", "google"],
-  },
+
 
   // DeepSeek
   {
@@ -313,10 +300,16 @@ const models = [
 /** Demo component for preview */
 export default function ModelSelectorDemo() {
   const [open, setOpen] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<string>("gpt-5.5")
+  const [selectedModel, setSelectedModel] = useState<string>("gemini-3.5-flash")
 
   const selectedModelData = models.find(model => model.id === selectedModel)
-  const chefs = Array.from(new Set(models.map(model => model.chef)))
+  const chefs = Array.from(new Set(models.map(model => model.chef))).sort((a, b) => {
+    const aFree = a === "Google" || a === "DeepSeek";
+    const bFree = b === "Google" || b === "DeepSeek";
+    if (aFree && !bFree) return -1;
+    if (!aFree && bFree) return 1;
+    return 0;
+  })
 
   return (
     <div className="flex size-full items-center justify-center p-8">
@@ -339,29 +332,49 @@ export default function ModelSelectorDemo() {
               <ModelSelectorGroup heading={chef} key={chef}>
                 {models
                   .filter(model => model.chef === chef)
-                  .map(model => (
-                    <ModelSelectorItem
-                      key={model.id}
-                      onSelect={() => {
-                        setSelectedModel(model.id)
-                        setOpen(false)
-                      }}
-                      value={model.id}
-                    >
-                      <ModelSelectorLogo provider={model.chefSlug} />
-                      <ModelSelectorName>{model.name}</ModelSelectorName>
-                      <ModelSelectorLogoGroup>
-                        {model.providers.map(provider => (
-                          <ModelSelectorLogo key={provider} provider={provider} />
-                        ))}
-                      </ModelSelectorLogoGroup>
-                      {selectedModel === model.id ? (
-                        <CheckIcon className="ml-auto size-4" />
-                      ) : (
-                        <div className="ml-auto size-4" />
-                      )}
-                    </ModelSelectorItem>
-                  ))}
+                  .map(model => {
+                    const isAllowed = model.id === "gemini-3.5-flash" || model.id === "deepseek-v4-flash";
+                    const isFree = model.id === "gemini-3.5-flash" || model.id === "deepseek-v4-flash";
+                    return (
+                      <ModelSelectorItem
+                        key={model.id}
+                        onSelect={() => {
+                          if (isAllowed) {
+                            setSelectedModel(model.id)
+                            setOpen(false)
+                          }
+                        }}
+                        value={model.id}
+                        disabled={!isAllowed}
+                        className={cn(!isAllowed && "opacity-50 cursor-not-allowed")}
+                      >
+                        <ModelSelectorLogo provider={model.chefSlug} />
+                        <ModelSelectorName className="flex items-center gap-1.5">
+                          {model.name}
+                          {isFree && (
+                            <span className="px-1.5 py-0.5 text-[9px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded flex-none">
+                              Free
+                            </span>
+                          )}
+                          {!isAllowed && (
+                            <span className="px-1.5 py-0.5 text-[9px] font-medium bg-zinc-500/10 text-zinc-400 border border-zinc-500/20 rounded flex items-center gap-0.5 flex-none">
+                              <Lock className="size-2" /> Pro
+                            </span>
+                          )}
+                        </ModelSelectorName>
+                        <ModelSelectorLogoGroup>
+                          {model.providers.map(provider => (
+                            <ModelSelectorLogo key={provider} provider={provider} />
+                          ))}
+                        </ModelSelectorLogoGroup>
+                        {selectedModel === model.id ? (
+                          <CheckIcon className="ml-auto size-4" />
+                        ) : (
+                          <div className="ml-auto size-4" />
+                        )}
+                      </ModelSelectorItem>
+                    )
+                  })}
               </ModelSelectorGroup>
             ))}
           </ModelSelectorList>

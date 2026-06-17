@@ -16,7 +16,7 @@ export default async function ChatSessionPage({
       <div className="flex min-h-svh items-center justify-center p-6">
         <div className="flex w-full max-w-md flex-col gap-6 text-center">
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight">Emergent AI</h1>
+            <h1 className="text-3xl font-bold tracking-tight">Supergent AI</h1>
             <p className="text-muted-foreground text-sm leading-relaxed">
               Experience the next generation of AI-powered workflows. Sign in to start chatting
               and managing your projects.
@@ -31,10 +31,6 @@ export default async function ChatSessionPage({
               <Link href="/login?screen_hint=sign-up">Create an account</Link>
             </Button>
           </div>
-
-          <div className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest">
-            Powered by WorkOS AuthKit
-          </div>
         </div>
       </div>
     )
@@ -44,6 +40,7 @@ export default async function ChatSessionPage({
     <ChatSessionShell
       projectId={id}
       user={{
+        id: user.id,
         profilePictureUrl: user.profilePictureUrl || null,
         firstName: user.firstName || null,
         email: user.email || null,

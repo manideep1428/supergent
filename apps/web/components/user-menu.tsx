@@ -132,7 +132,7 @@ export function UserMenu({
             <span>Refer</span>
           </DropdownMenuItem>
           <DropdownMenuItem asChild className="rounded-lg px-3 py-1.5">
-            <Link href="/dashboard">
+            <Link href="/upgrade">
               <Coins className="mr-2 text-muted-foreground" size={14} />
               <span>Credits</span>
               <span className="ml-auto rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">

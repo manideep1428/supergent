@@ -19,10 +19,10 @@ export default async function Page() {
         user={
           user
             ? {
-                name: user.firstName || user.email || "User",
-                email: user.email || "",
-                avatar: user.profilePictureUrl || "",
-              }
+              name: user.firstName || user.email || "User",
+              email: user.email || "",
+              avatar: user.profilePictureUrl || "",
+            }
             : undefined
         }
       />
@@ -30,8 +30,6 @@ export default async function Page() {
         <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b px-4">
           <div className="flex items-center gap-2">
             <SidebarTrigger className="-ml-1" />
-            <span className="text-sm font-medium">Chat</span>
-            <span className="text-muted-foreground text-xs px-1.5 py-0.5 bg-muted rounded-md font-mono">v1.0</span>
           </div>
           {!user ? (
             <Button asChild size="sm">

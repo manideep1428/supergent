@@ -1,10 +1,22 @@
 "use client"
 
 import type { ToolUIPart } from "ai"
-import { CheckIcon, GlobeIcon, MicIcon } from "lucide-react"
-import { nanoid } from "nanoid"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { ArrowUpIcon, CheckIcon, ChevronUpIcon, Lock, SquareIcon, Loader2Icon, Crown } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useQuery, useMutation } from "convex/react"
+import { api } from "backend/convex/_generated/api"
 import { toast } from "sonner"
+import { cn } from "@workspace/ui/lib/utils"
+import { Button } from "@workspace/ui/components/button"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@workspace/ui/components/dialog"
+import { useRouter } from "next/navigation"
 /**
  * @title React AI Chatbot
  * @credit {"name": "Vercel", "url": "https://ai-sdk.dev/elements", "license": {"name": "Apache License 2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0"}}
@@ -79,11 +91,20 @@ import {
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai/reasoning"
 import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai/sources"
 import { ToolEventCard, type ToolEvent } from "@/components/ai/tool-event-card"
+import { useSelectedModel } from "@/lib/use-selected-model"
 
 type StreamEvent =
     | { type: "text"; value: string }
     | { type: "tool"; value: ToolEvent }
     | { type: "error"; value: string }
+    | { type: "reasoning-start"; value: string }
+    | { type: "reasoning-delta"; value: string }
+    | { type: "reasoning-end"; value: string }
+
+export type MessagePart =
+    | { type: "text"; id: string; content: string }
+    | { type: "reasoning"; id: string; content: string; isStreaming: boolean }
+    | { type: "tool"; id: string; event: ToolEvent }
 
 interface MessageType {
     key: string
@@ -92,10 +113,12 @@ interface MessageType {
     versions: {
         id: string
         content: string
+        parts?: MessagePart[]
     }[]
     reasoning?: {
         content: string
-        duration: number
+        duration?: number
+        isStreaming?: boolean
     }
     tools?: {
         name: string
@@ -112,7 +135,10 @@ type StoredMessage = {
     _id?: string
     role: "user" | "assistant" | "system"
     content: string
+    status?: "saved" | "streaming" | "error"
     createdAt: number
+    reasoning?: string
+    toolEvents?: ToolEvent[]
 }
 
 const initialMessages: MessageType[] = []
@@ -165,26 +191,13 @@ const models = [
 
     // Google
     {
-        id: "gemini-3.1-pro",
-        name: "Gemini 3.1 Pro",
+        id: "gemini-3.5-flash",
+        name: "Gemini 3.5 Flash",
         chef: "Google",
         chefSlug: "google",
         providers: ["google-vertex", "google"],
     },
-    {
-        id: "gemini-3-flash",
-        name: "Gemini 3 Flash",
-        chef: "Google",
-        chefSlug: "google",
-        providers: ["google-vertex", "google"],
-    },
-    {
-        id: "gemini-3-deep-think",
-        name: "Gemini 3 Deep Think",
-        chef: "Google",
-        chefSlug: "google",
-        providers: ["google-vertex", "google"],
-    },
+
 
     // DeepSeek
     {
@@ -286,35 +299,88 @@ const PromptInputAttachmentsDisplay = () => {
 
 function messagesFromStored(storedMessages: StoredMessage[]): MessageType[] {
     return storedMessages
-        .filter(message => message.role === "user" || message.role === "assistant")
+        .filter(message => {
+            if (message.role !== "user" && message.role !== "assistant") return false
+            // Filter out streaming placeholders (empty assistant messages from interrupted streams)
+            if (message.role === "assistant" && message.status === "streaming" && !message.content.trim()) return false
+            return true
+        })
         .map(message => {
             const id = message._id || `${message.role}-${message.createdAt}`
             const from: "user" | "assistant" = message.role === "user" ? "user" : "assistant"
 
+            const parts: any[] = []
+
+            if (message.reasoning) {
+                parts.push({
+                    type: "reasoning",
+                    id: `reasoning-stored-${id}`,
+                    content: message.reasoning,
+                    isStreaming: false,
+                })
+            }
+
+            if (message.toolEvents && message.toolEvents.length > 0) {
+                message.toolEvents.forEach((toolEvent: any) => {
+                    parts.push({
+                        type: "tool",
+                        id: toolEvent.id,
+                        event: toolEvent,
+                    })
+                })
+            }
+
+            parts.push({
+                type: "text",
+                id: `text-stored-${id}`,
+                content: message.content,
+            })
+
             return {
                 key: id,
                 from,
+                reasoning: message.reasoning ? { content: message.reasoning, isStreaming: false } : undefined,
+                toolEvents: message.toolEvents || [],
                 versions: [
                     {
                         id,
                         content: message.content,
+                        parts,
                     },
                 ],
             }
         })
 }
 
-export function ChatbotDemo({ chatId }: { chatId?: string }) {
-    const [model, setModel] = useState<string>(models[0]?.id ?? "gpt-4o")
+export function ChatbotDemo({ chatId, userId }: { chatId?: string; userId?: string | null }) {
+    const [model, setModel] = useSelectedModel(
+        models.map(m => m.id),
+        "gemini-3.5-flash",
+    )
     const [modelSelectorOpen, setModelSelectorOpen] = useState(false)
     const [text, setText] = useState<string>("")
-    const [useWebSearch, setUseWebSearch] = useState<boolean>(false)
-    const [useMicrophone, setUseMicrophone] = useState<boolean>(false)
     const [status, setStatus] = useState<"submitted" | "streaming" | "ready" | "error">("ready")
     const [messages, setMessages] = useState<MessageType[]>(initialMessages)
+    const [isHydrating, setIsHydrating] = useState<boolean>(!!chatId)
     const [credits, setCredits] = useState<number>(1) // FREE PLAN CREDITS
-    const [_streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
+    const [isFreePlan, setIsFreePlan] = useState<boolean>(true)
+    const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false)
+    const router = useRouter()
+    const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
     const hydratedChatRef = useRef<string | null>(null)
+    const abortControllerRef = useRef<AbortController | null>(null)
+
+    const chatData = useQuery(
+        api.chats.list,
+        chatId && userId ? { chatId, userId } : "skip"
+    )
+
+    const updateMessage = useMutation(api.chats.updateMessage)
+
+    const savedMessages = useMemo(() => {
+        if (!chatData?.messages) return []
+        return messagesFromStored(chatData.messages)
+    }, [chatData?.messages])
     // Mirror of `messages` so we can read the current list synchronously
     // without relying on a setState updater (which React may run multiple
     // times for purity checks).
@@ -322,6 +388,22 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
     useEffect(() => {
         messagesRef.current = messages
     }, [messages])
+
+    useEffect(() => {
+        let cancelled = false
+        fetch("/api/credits", { cache: "no-store" })
+            .then(r => r.ok ? r.json() : null)
+            .then((data: { credits?: { lifetimeIssued: number; balance: number } } | null) => {
+                if (!cancelled && data?.credits) {
+                    setIsFreePlan(data.credits.lifetimeIssued <= 5)
+                    setCredits(data.credits.balance)
+                }
+            })
+            .catch(() => {})
+        return () => {
+            cancelled = true
+        }
+    }, [])
 
     const selectedModelData = models.find(m => m.id === model)
 
@@ -334,6 +416,15 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
         setStatus("streaming")
         setStreamingMessageId(messageId)
 
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort()
+        }
+        const controller = new AbortController()
+        abortControllerRef.current = controller
+
+        let serverMessageId: string | null = null
+        let currentContent = ""
+
         try {
             const backendMessages = messageHistory.map(m => ({
                 from: m.from,
@@ -344,8 +435,14 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: backendMessages, modelId: selectedModel, chatId })
+                body: JSON.stringify({ messages: backendMessages, modelId: selectedModel, chatId }),
+                signal: controller.signal
             })
+
+            if (response.ok) {
+                window.sessionStorage.removeItem(`pending_chat_${chatId}`)
+                serverMessageId = response.headers.get("x-message-id")
+            }
 
             if (!response.ok) {
                 let errorText = `Request failed with status ${response.status}`
@@ -380,56 +477,207 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
 
             const reader = response.body?.getReader()
             const decoder = new TextDecoder()
-            let currentContent = ""
+            let currentReasoning = ""
+            let reasoningStreaming = false
+            let currentParts: MessagePart[] = []
             let buffer = ""
 
             const applyEvent = (event: StreamEvent) => {
-                setMessages(prev =>
-                    prev.map(msg => {
-                        if (!msg.versions.some(v => v.id === messageId)) {
-                            return msg
-                        }
+                // IMPORTANT: never mutate `currentContent` inside the
+                // setMessages updater. React (especially in Strict Mode /
+                // dev) may invoke updaters multiple times for purity
+                // checks, which would concatenate every streamed delta
+                // twice and produce duplicated output like
+                // "HiHi!! What What...". Compute the next content here,
+                // then pass an immutable snapshot into the pure updater.
+                if (event.type === "text") {
+                    const lastPart = currentParts[currentParts.length - 1];
+                    if (lastPart && lastPart.type === "text") {
+                        currentParts[currentParts.length - 1] = {
+                            ...lastPart,
+                            content: lastPart.content + event.value,
+                        };
+                    } else {
+                        currentParts.push({
+                            type: "text",
+                            id: `text-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+                            content: event.value,
+                        });
+                    }
 
-                        if (event.type === "text") {
-                            currentContent += event.value
+                    currentContent += event.value
+                    const snapshot = currentContent
+                    const partsSnapshot = [...currentParts]
+                    setMessages(prev =>
+                        prev.map(msg => {
+                            if (!msg.versions.some(v => v.id === messageId)) {
+                                return msg
+                            }
                             return {
                                 ...msg,
                                 versions: msg.versions.map(v =>
                                     v.id === messageId
-                                        ? { ...v, content: currentContent }
+                                        ? { ...v, content: snapshot, parts: partsSnapshot }
                                         : v,
                                 ),
                             }
-                        }
+                        }),
+                    )
+                    return
+                }
 
-                        if (event.type === "tool") {
+                if (event.type === "error") {
+                    const errText = `⚠️ ${event.value}`
+                    const lastPart = currentParts[currentParts.length - 1];
+                    if (lastPart && lastPart.type === "text") {
+                        currentParts[currentParts.length - 1] = {
+                            ...lastPart,
+                            content: lastPart.content + "\n\n" + errText,
+                        };
+                    } else {
+                        currentParts.push({
+                            type: "text",
+                            id: `error-${Date.now()}`,
+                            content: errText,
+                        });
+                    }
+
+                    currentContent = currentContent
+                        ? `${currentContent}\n\n${errText}`
+                        : errText
+                    const snapshot = currentContent
+                    const partsSnapshot = [...currentParts]
+                    setMessages(prev =>
+                        prev.map(msg => {
+                            if (!msg.versions.some(v => v.id === messageId)) {
+                                return msg
+                            }
+                            return {
+                                ...msg,
+                                versions: msg.versions.map(v =>
+                                    v.id === messageId
+                                        ? { ...v, content: snapshot, parts: partsSnapshot }
+                                        : v,
+                                ),
+                            }
+                        }),
+                    )
+                    return
+                }
+
+                if (event.type === "tool") {
+                    const idx = currentParts.findIndex(p => p.type === "tool" && p.id === event.value.id);
+                    if (idx !== -1) {
+                        currentParts[idx] = {
+                            type: "tool",
+                            id: event.value.id,
+                            event: event.value,
+                        };
+                    } else {
+                        currentParts.push({
+                            type: "tool",
+                            id: event.value.id,
+                            event: event.value,
+                        });
+                    }
+
+                    const partsSnapshot = [...currentParts]
+                    setMessages(prev =>
+                        prev.map(msg => {
+                            if (!msg.versions.some(v => v.id === messageId)) {
+                                return msg
+                            }
                             const existing = msg.toolEvents ?? []
                             const idx = existing.findIndex(e => e.id === event.value.id)
                             const next =
                                 idx === -1
                                     ? [...existing, event.value]
                                     : existing.map((e, i) => (i === idx ? event.value : e))
-                            return { ...msg, toolEvents: next }
-                        }
-
-                        if (event.type === "error") {
-                            const errText = `⚠️ ${event.value}`
-                            currentContent = currentContent
-                                ? `${currentContent}\n\n${errText}`
-                                : errText
                             return {
                                 ...msg,
+                                toolEvents: next,
                                 versions: msg.versions.map(v =>
                                     v.id === messageId
-                                        ? { ...v, content: currentContent }
+                                        ? { ...v, parts: partsSnapshot }
                                         : v,
                                 ),
                             }
-                        }
+                        }),
+                    )
+                    return
+                }
 
-                        return msg
-                    }),
-                )
+                if (
+                    event.type === "reasoning-start" ||
+                    event.type === "reasoning-delta" ||
+                    event.type === "reasoning-end"
+                ) {
+                    const lastPart = currentParts[currentParts.length - 1];
+                    if (event.type === "reasoning-start") {
+                        reasoningStreaming = true
+                        if (lastPart && lastPart.type === "reasoning") {
+                            currentParts[currentParts.length - 1] = {
+                                ...lastPart,
+                                isStreaming: true,
+                            };
+                        } else {
+                            currentParts.push({
+                                type: "reasoning",
+                                id: `reasoning-${Date.now()}`,
+                                content: "",
+                                isStreaming: true,
+                            });
+                        }
+                    } else if (event.type === "reasoning-delta") {
+                        currentReasoning += event.value
+                        reasoningStreaming = true
+                        if (lastPart && lastPart.type === "reasoning") {
+                            currentParts[currentParts.length - 1] = {
+                                ...lastPart,
+                                content: lastPart.content + event.value,
+                                isStreaming: true,
+                            };
+                        } else {
+                            currentParts.push({
+                                type: "reasoning",
+                                id: `reasoning-${Date.now()}`,
+                                content: event.value,
+                                isStreaming: true,
+                            });
+                        }
+                    } else {
+                        reasoningStreaming = false
+                        if (lastPart && lastPart.type === "reasoning") {
+                            currentParts[currentParts.length - 1] = {
+                                ...lastPart,
+                                isStreaming: false,
+                            };
+                        }
+                    }
+
+                    const reasoningSnapshot = {
+                        content: currentReasoning,
+                        isStreaming: reasoningStreaming,
+                    }
+                    const partsSnapshot = [...currentParts]
+
+                    setMessages(prev =>
+                        prev.map(msg => {
+                            if (!msg.versions.some(v => v.id === messageId)) {
+                                return msg
+                            }
+                            return {
+                                ...msg,
+                                reasoning: reasoningSnapshot,
+                                versions: msg.versions.map(v =>
+                                    v.id === messageId
+                                        ? { ...v, parts: partsSnapshot }
+                                        : v,
+                                ),
+                            }
+                        }),
+                    )
+                }
             }
 
             const consumeBuffer = (final = false) => {
@@ -470,14 +718,30 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                     consumeBuffer(false)
                 }
             }
-        } catch (error) {
-            console.error(error)
-            toast.error("Error communicating with AI API")
+        } catch (error: any) {
+            if (error?.name === "AbortError") {
+                console.log("Stream aborted by user")
+                if (serverMessageId && userId) {
+                    updateMessage({
+                        messageId: serverMessageId as any,
+                        chatId,
+                        userId,
+                        content: currentContent || "(stopped)",
+                        status: "saved",
+                    }).catch(err => {
+                        console.error("Failed to update message on abort", err)
+                    })
+                }
+            } else {
+                console.error(error)
+                toast.error("Error communicating with AI API")
+            }
         } finally {
             setStatus("ready")
             setStreamingMessageId(null)
+            abortControllerRef.current = null
         }
-    }, [chatId])
+    }, [chatId, userId, updateMessage])
 
     const addUserMessage = useCallback(
         (content: string, selectedModel = model) => {
@@ -500,6 +764,7 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                     {
                         id: `user-${ts}`,
                         content,
+                        parts: [{ type: "text", id: `text-user-${ts}`, content }],
                     },
                 ],
             }
@@ -512,6 +777,7 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                     {
                         id: assistantMessageId,
                         content: "",
+                        parts: [],
                     },
                 ],
             }
@@ -529,76 +795,66 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
         [credits, fetchRealResponse, model],
     )
 
+    const latestRef = useRef({ model, fetchRealResponse, addUserMessage })
     useEffect(() => {
-        if (!chatId || hydratedChatRef.current === chatId) {
+        latestRef.current = { model, fetchRealResponse, addUserMessage }
+    })
+
+    useEffect(() => {
+        if (!chatId || chatData === undefined) {
+            return
+        }
+
+        // Only run hydration logic once per chatId transition
+        if (hydratedChatRef.current === chatId) {
+            // Once hydrated, if we are not actively streaming, sync savedMessages.
+            // Only sync if there are saved messages to avoid wiping local state.
+            if (status !== "streaming" && status !== "submitted" && savedMessages.length > 0) {
+                const hasLocalUnsavedAssistant = 
+                    messages.length > 0 && 
+                    messages[messages.length - 1]?.from === "assistant" &&
+                    (savedMessages.length === 0 || savedMessages[savedMessages.length - 1]?.from !== "assistant");
+
+                if (!hasLocalUnsavedAssistant) {
+                    setMessages(savedMessages)
+                }
+            }
             return
         }
 
         hydratedChatRef.current = chatId
-        let cancelled = false
+        setIsHydrating(false)
 
-        const hydrate = async () => {
-            const pendingKey = `pending_chat_${chatId}`
-            const pendingRaw = window.sessionStorage.getItem(pendingKey)
+        const pendingKey = `pending_chat_${chatId}`
+        const pendingRaw = window.sessionStorage.getItem(pendingKey)
 
-            // Brand-new chat coming from the home page: fire it immediately so
-            // the user message renders without waiting for the GET round-trip
-            // (which may be empty, slow, or fail on a not-yet-persisted chat).
+        if (savedMessages.length > 0) {
+            setMessages(savedMessages)
+
             if (pendingRaw) {
                 window.sessionStorage.removeItem(pendingKey)
-                try {
-                    const pending = JSON.parse(pendingRaw) as {
-                        text?: string
-                        modelId?: string
-                    }
-
-                    if (pending.modelId) {
-                        setModel(pending.modelId)
-                    }
-
-                    if (pending.text?.trim()) {
-                        addUserMessage(pending.text, pending.modelId || model)
-                    }
-                } catch (error) {
-                    console.error("Could not parse pending chat payload", error)
-                    toast.error("Could not start chat from the home page")
-                }
-                return
             }
 
-            // Otherwise this is an existing chat: hydrate saved history.
-            try {
-                const response = await fetch(
-                    `/api/chat?chatId=${encodeURIComponent(chatId)}`,
-                    { cache: "no-store" },
-                )
-                if (!response.ok) {
-                    return
-                }
-
-                const data = (await response.json()) as { messages?: StoredMessage[] }
-                if (cancelled) {
-                    return
-                }
-
-                const storedMessages = messagesFromStored(data.messages || [])
-                if (storedMessages.length > 0) {
-                    setMessages(storedMessages)
-                }
-            } catch (error) {
-                console.error(error)
-                toast.error("Unable to load saved chat")
+            // DO NOT auto-resume AI response on refresh/hydration.
+            // Per AI SDK docs: page refresh is a disconnect, not a request to re-generate.
+            // The user must explicitly send a new message to get an AI response.
+        } else if (pendingRaw) {
+            const pending = JSON.parse(pendingRaw) as { text?: string; modelId?: string }
+            if (pending.modelId) setModel(pending.modelId)
+            if (pending.text?.trim()) {
+                latestRef.current.addUserMessage(pending.text, pending.modelId || latestRef.current.model)
             }
         }
-
-        hydrate()
-
-        return () => {
-            cancelled = true
-        }
-    }, [addUserMessage, chatId, model])
+    }, [chatId, chatData, savedMessages, status, messages])
 
     const handleSubmit = (message: PromptInputMessage) => {
+        if (status === "streaming") {
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort()
+            }
+            return
+        }
+
         const hasText = Boolean(message.text)
         const hasAttachments = Boolean(message.files?.length)
 
@@ -612,7 +868,7 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
         // so it can wake a snapshotted sandbox before the agent's first tool
         // call needs it.
         if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent("emergent:chat-message-sent"))
+            window.dispatchEvent(new CustomEvent("supergent:chat-message-sent"))
         }
 
         if (message.files?.length) {
@@ -625,14 +881,78 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
         setText("")
     }
 
+    // ── Skeleton shown while history is loading from the database ──────────
+    if (isHydrating) {
+        return (
+            <div className="relative flex flex-1 min-h-0 w-full flex-col overflow-hidden">
+                <div className="flex-1 overflow-hidden p-4 space-y-6">
+                    {/* AI bubble */}
+                    <div className="flex items-end gap-2">
+                        <div className="size-7 shrink-0 rounded-full bg-zinc-800 animate-pulse" />
+                        <div className="flex flex-col gap-2 max-w-[85%]">
+                            <div className="h-3 w-48 rounded-full bg-zinc-800 animate-pulse" />
+                            <div className="h-3 w-64 rounded-full bg-zinc-800 animate-pulse" />
+                            <div className="h-3 w-36 rounded-full bg-zinc-800 animate-pulse" />
+                        </div>
+                    </div>
+                    {/* User bubble */}
+                    <div className="flex items-end gap-2 justify-end">
+                        <div className="flex flex-col gap-2 items-end max-w-[75%]">
+                            <div className="h-3 w-40 rounded-full bg-zinc-700/80 animate-pulse" />
+                            <div className="h-3 w-56 rounded-full bg-zinc-700/80 animate-pulse" />
+                        </div>
+                        <div className="size-7 shrink-0 rounded-full bg-zinc-700/80 animate-pulse" />
+                    </div>
+                    {/* AI bubble */}
+                    <div className="flex items-end gap-2">
+                        <div className="size-7 shrink-0 rounded-full bg-zinc-800 animate-pulse" />
+                        <div className="flex flex-col gap-2 max-w-[85%]">
+                            <div className="h-3 w-72 rounded-full bg-zinc-800 animate-pulse" />
+                            <div className="h-3 w-52 rounded-full bg-zinc-800 animate-pulse" />
+                            <div className="h-3 w-44 rounded-full bg-zinc-800 animate-pulse" />
+                            <div className="h-3 w-60 rounded-full bg-zinc-800 animate-pulse" />
+                        </div>
+                    </div>
+                    {/* User bubble */}
+                    <div className="flex items-end gap-2 justify-end">
+                        <div className="flex flex-col gap-2 items-end max-w-[75%]">
+                            <div className="h-3 w-32 rounded-full bg-zinc-700/80 animate-pulse" />
+                        </div>
+                        <div className="size-7 shrink-0 rounded-full bg-zinc-700/80 animate-pulse" />
+                    </div>
+                    {/* AI bubble */}
+                    <div className="flex items-end gap-2">
+                        <div className="size-7 shrink-0 rounded-full bg-zinc-800 animate-pulse" />
+                        <div className="flex flex-col gap-2 max-w-[85%]">
+                            <div className="h-3 w-56 rounded-full bg-zinc-800 animate-pulse" />
+                            <div className="h-3 w-40 rounded-full bg-zinc-800 animate-pulse" />
+                        </div>
+                    </div>
+                </div>
+                {/* Input skeleton */}
+                <div className="shrink-0 px-3 pb-3">
+                    <div className="h-[72px] rounded-xl bg-zinc-900 border border-white/10 animate-pulse" />
+                </div>
+            </div>
+        )
+    }
+
     return (
-        <div className="relative flex h-full w-full flex-col overflow-hidden">
+        <div className="relative flex flex-1 min-h-0 w-full flex-col overflow-hidden">
             <Conversation className="min-h-0 flex-1 scrollbar-hide">
                 <ConversationContent>
                     {messages.map(({ versions, ...message }) => (
                         <MessageBranch defaultBranch={0} key={message.key}>
                             <MessageBranchContent>
-                                {versions.map(version => (
+                                {versions.map(version => {
+                                    // Show typing skeleton for empty streaming AI messages
+                                    const isThisStreaming =
+                                        message.from === "assistant" &&
+                                        streamingMessageId === version.id &&
+                                        !version.content &&
+                                        (!version.parts || version.parts.length === 0)
+
+                                    return (
                                     <Message from={message.from} key={`${message.key}-${version.id}`}>
                                         <div>
                                             {message.sources?.length && (
@@ -645,25 +965,78 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                                                     </SourcesContent>
                                                 </Sources>
                                             )}
-                                            {message.reasoning && (
-                                                <Reasoning duration={message.reasoning.duration}>
-                                                    <ReasoningTrigger />
-                                                    <ReasoningContent>{message.reasoning.content}</ReasoningContent>
-                                                </Reasoning>
-                                            )}
-                                            {message.from === "assistant" && message.toolEvents?.length ? (
-                                                <div className="mb-1.5 space-y-1">
-                                                    {message.toolEvents.map(toolEvent => (
-                                                        <ToolEventCard event={toolEvent} key={toolEvent.id} />
-                                                    ))}
+
+                                            {isThisStreaming ? (
+                                                /* ── Typing indicator skeleton ── */
+                                                <div className="flex items-center gap-1.5 px-3 py-2.5 rounded-2xl bg-zinc-800/60 w-fit">
+                                                    <span
+                                                        className="size-2 rounded-full bg-zinc-400"
+                                                        style={{ animation: "typingBounce 1.2s ease-in-out infinite", animationDelay: "0ms" }}
+                                                    />
+                                                    <span
+                                                        className="size-2 rounded-full bg-zinc-400"
+                                                        style={{ animation: "typingBounce 1.2s ease-in-out infinite", animationDelay: "200ms" }}
+                                                    />
+                                                    <span
+                                                        className="size-2 rounded-full bg-zinc-400"
+                                                        style={{ animation: "typingBounce 1.2s ease-in-out infinite", animationDelay: "400ms" }}
+                                                    />
                                                 </div>
-                                            ) : null}
-                                            <MessageContent>
-                                                <MessageResponse>{version.content}</MessageResponse>
-                                            </MessageContent>
+                                            ) : version.parts && version.parts.length > 0 ? (
+                                                <div className="space-y-3">
+                                                    {version.parts.map(part => {
+                                                        if (part.type === "reasoning") {
+                                                            return (
+                                                                <Reasoning
+                                                                    key={part.id}
+                                                                    isStreaming={part.isStreaming}
+                                                                >
+                                                                    <ReasoningTrigger />
+                                                                    <ReasoningContent>{part.content}</ReasoningContent>
+                                                                </Reasoning>
+                                                            )
+                                                        }
+                                                        if (part.type === "tool") {
+                                                            return (
+                                                                <div className="mb-1.5" key={part.id}>
+                                                                    <ToolEventCard event={part.event} />
+                                                                </div>
+                                                            )
+                                                        }
+                                                        return (
+                                                            <MessageContent key={part.id}>
+                                                                <MessageResponse>{part.content}</MessageResponse>
+                                                            </MessageContent>
+                                                        )
+                                                    })}
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    {message.reasoning && (
+                                                        <Reasoning
+                                                            duration={message.reasoning.duration}
+                                                            isStreaming={message.reasoning.isStreaming ?? false}
+                                                        >
+                                                            <ReasoningTrigger />
+                                                            <ReasoningContent>{message.reasoning.content}</ReasoningContent>
+                                                        </Reasoning>
+                                                    )}
+                                                    {message.from === "assistant" && message.toolEvents?.length ? (
+                                                        <div className="mb-1.5 space-y-1">
+                                                            {message.toolEvents.map(toolEvent => (
+                                                                <ToolEventCard event={toolEvent} key={toolEvent.id} />
+                                                            ))}
+                                                        </div>
+                                                    ) : null}
+                                                    <MessageContent>
+                                                        <MessageResponse>{version.content}</MessageResponse>
+                                                    </MessageContent>
+                                                </>
+                                            )}
                                         </div>
                                     </Message>
-                                ))}
+                                    )
+                                })}
                             </MessageBranchContent>
                             {versions.length > 1 && (
                                 <MessageBranchSelector from={message.from}>
@@ -674,6 +1047,7 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                             )}
                         </MessageBranch>
                     ))}
+
                 </ConversationContent>
                 <ConversationScrollButton />
             </Conversation>
@@ -684,72 +1058,118 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                             <PromptInputAttachmentsDisplay />
                         </PromptInputHeader>
                         <PromptInputBody>
-                            <PromptInputTextarea onChange={event => setText(event.target.value)} value={text} />
+                            <PromptInputTextarea
+                                onChange={event => setText(event.target.value)}
+                                value={text}
+                                onKeyDown={e => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                        e.preventDefault()
+                                        // handleSubmit handles streaming abort, empty check, etc.
+                                        handleSubmit({ text, files: [] })
+                                        return
+                                    }
+                                    if (e.key === "Enter" && e.shiftKey) {
+                                        // Shift+Enter = insert a real newline
+                                        e.preventDefault()
+                                        const el = e.currentTarget
+                                        const start = el.selectionStart ?? 0
+                                        const end = el.selectionEnd ?? 0
+                                        const newValue = el.value.substring(0, start) + "\n" + el.value.substring(end)
+                                        setText(newValue)
+                                        // Restore cursor position after the newline
+                                        requestAnimationFrame(() => {
+                                            el.selectionStart = el.selectionEnd = start + 1
+                                        })
+                                    }
+                                }}
+                            />
                         </PromptInputBody>
+
                         <PromptInputFooter>
-                            <PromptInputTools>
+                            <PromptInputTools className="min-w-0 flex-1">
                                 <PromptInputActionMenu>
                                     <PromptInputActionMenuTrigger />
                                     <PromptInputActionMenuContent>
                                         <PromptInputActionAddAttachments />
                                     </PromptInputActionMenuContent>
                                 </PromptInputActionMenu>
-                                <PromptInputButton
-                                    onClick={() => setUseMicrophone(!useMicrophone)}
-                                    variant={useMicrophone ? "default" : "ghost"}
-                                >
-                                    <MicIcon size={16} />
-                                    <span className="sr-only">Microphone</span>
-                                </PromptInputButton>
-                                <PromptInputButton
-                                    onClick={() => setUseWebSearch(!useWebSearch)}
-                                    variant={useWebSearch ? "default" : "ghost"}
-                                >
-                                    <GlobeIcon size={16} />
-                                    <span>Search</span>
-                                </PromptInputButton>
                                 <ModelSelector onOpenChange={setModelSelectorOpen} open={modelSelectorOpen}>
                                     <ModelSelectorTrigger asChild>
-                                        <PromptInputButton>
+                                        <PromptInputButton className="max-w-[130px] min-w-0 shrink flex gap-1.5 items-center">
                                             {selectedModelData?.chefSlug && (
                                                 <ModelSelectorLogo provider={selectedModelData.chefSlug} />
                                             )}
                                             {selectedModelData?.name && (
-                                                <ModelSelectorName>{selectedModelData.name}</ModelSelectorName>
+                                                <ModelSelectorName className="flex items-center gap-1">
+                                                    {selectedModelData.name}
+                                                    {(selectedModelData.id === "gemini-3.5-flash" || selectedModelData.id === "deepseek-v4-flash") && isFreePlan && (
+                                                         <span className="px-1 py-0.2 text-[8px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">
+                                                             Free
+                                                         </span>
+                                                     )}
+                                                </ModelSelectorName>
                                             )}
+                                            <ChevronUpIcon className="size-3.5 shrink-0 opacity-50 ml-auto" />
                                         </PromptInputButton>
                                     </ModelSelectorTrigger>
                                     <ModelSelectorContent>
                                         <ModelSelectorInput placeholder="Search models..." />
                                         <ModelSelectorList>
                                             <ModelSelectorEmpty>No models found.</ModelSelectorEmpty>
-                                            {Array.from(new Set(models.map(m => m.chef))).map(chef => (
+                                            {Array.from(new Set(models.map(m => m.chef)))
+                                                .sort((a, b) => {
+                                                    const aFree = a === "Google" || a === "DeepSeek";
+                                                    const bFree = b === "Google" || b === "DeepSeek";
+                                                    if (aFree && !bFree) return -1;
+                                                    if (!aFree && bFree) return 1;
+                                                    return 0;
+                                                })
+                                                .map(chef => (
                                                 <ModelSelectorGroup heading={chef} key={chef}>
                                                     {models
                                                         .filter(m => m.chef === chef)
-                                                        .map(m => (
-                                                            <ModelSelectorItem
-                                                                key={m.id}
-                                                                onSelect={() => {
-                                                                    setModel(m.id)
-                                                                    setModelSelectorOpen(false)
-                                                                }}
-                                                                value={m.id}
-                                                            >
-                                                                <ModelSelectorLogo provider={m.chefSlug} />
-                                                                <ModelSelectorName>{m.name}</ModelSelectorName>
-                                                                <ModelSelectorLogoGroup>
-                                                                    {m.providers.map(provider => (
-                                                                        <ModelSelectorLogo key={provider} provider={provider} />
-                                                                    ))}
-                                                                </ModelSelectorLogoGroup>
-                                                                {model === m.id ? (
-                                                                    <CheckIcon className="ml-auto size-4" />
-                                                                ) : (
-                                                                    <div className="ml-auto size-4" />
-                                                                )}
-                                                            </ModelSelectorItem>
-                                                        ))}
+                                                        .map(m => {
+                                                             const isFree = m.id === "gemini-3.5-flash" || m.id === "deepseek-v4-flash";
+                                                             const isAllowed = !isFreePlan || isFree;
+                                                            return (
+                                                                <ModelSelectorItem
+                                                                    key={m.id}
+                                                                    onSelect={() => {
+                                                                        if (isAllowed) {
+                                                                            setModel(m.id)
+                                                                            setModelSelectorOpen(false)
+                                                                        } else {
+                                                                            setUpgradeDialogOpen(true)
+                                                                            setModelSelectorOpen(false)
+                                                                        }
+                                                                    }}
+                                                                    value={m.id}
+                                                                    className={cn(!isAllowed && "opacity-80 cursor-pointer")}
+                                                                >
+                                                                    <ModelSelectorLogo provider={m.chefSlug} />
+                                                                    <ModelSelectorName className="flex items-center gap-1.5">
+                                                                        {m.name}
+                                                                        {isFree && isFreePlan && (
+                                                                            <span className="px-1.5 py-0.5 text-[9px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">
+                                                                                Free
+                                                                            </span>
+                                                                        )}
+                                                                        {!isAllowed && (
+                                                                            <span className="px-1.5 py-0.5 text-[9px] font-medium bg-zinc-500/10 text-zinc-400 border border-zinc-500/20 rounded flex items-center gap-0.5">
+                                                                                <Lock className="size-2" /> Pro
+                                                                            </span>
+                                                                        )}
+                                                                    </ModelSelectorName>
+                                                                    {!isAllowed ? (
+                                                                        <Lock className="ml-auto size-4 text-amber-500 fill-amber-500/10" />
+                                                                    ) : model === m.id ? (
+                                                                        <CheckIcon className="ml-auto size-4" />
+                                                                    ) : (
+                                                                        <div className="ml-auto size-4" />
+                                                                    )}
+                                                                </ModelSelectorItem>
+                                                            )
+                                                        })}
                                                 </ModelSelectorGroup>
                                             ))}
                                         </ModelSelectorList>
@@ -757,13 +1177,52 @@ export function ChatbotDemo({ chatId }: { chatId?: string }) {
                                 </ModelSelector>
                             </PromptInputTools>
                             <PromptInputSubmit
-                                disabled={!(text.trim() || status) || status === "streaming"}
+                                disabled={status === "submitted" || (!text.trim() && status === "ready")}
                                 status={status}
-                            />
+                            >
+                                {status === "streaming" ? (
+                                    <SquareIcon className="size-4 text-red-500 fill-red-500 hover:scale-110 transition-transform" />
+                                ) : status === "submitted" ? (
+                                    <Loader2Icon className="size-4 animate-spin" />
+                                ) : (
+                                    <ArrowUpIcon className="size-4" />
+                                )}
+                            </PromptInputSubmit>
                         </PromptInputFooter>
                     </PromptInput>
                 </div>
             </div>
+            <Dialog open={upgradeDialogOpen} onOpenChange={setUpgradeDialogOpen}>
+                <DialogContent className="bg-zinc-950 border border-white/10 text-white sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="text-lg font-semibold text-white flex items-center gap-2">
+                            <Crown className="size-5 text-amber-500 fill-amber-500/10" />
+                            Upgrade to Pro
+                        </DialogTitle>
+                        <DialogDescription className="text-sm text-zinc-400">
+                            Premium models (such as GPT-5.5, Claude 4.6, and Gemini 3 Deep Think) are only available on paid plans. Upgrade your plan to get access to these advanced models.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="mt-4 flex flex-col sm:flex-row gap-2">
+                        <Button
+                            variant="ghost"
+                            onClick={() => setUpgradeDialogOpen(false)}
+                            className="text-zinc-400 hover:text-white hover:bg-white/10 border-white/10"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={() => {
+                                setUpgradeDialogOpen(false)
+                                router.push("/upgrade")
+                            }}
+                            className="bg-white text-black hover:bg-zinc-200"
+                        >
+                            Upgrade Now
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

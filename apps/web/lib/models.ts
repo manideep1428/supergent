@@ -1,5 +1,5 @@
 /**
- * Model registry for the Emergent chat.
+ * Model registry for the Supergent chat.
  *
  * Selector display IDs (the `id` field that the UI sends to /api/chat) are
  * mapped to:
@@ -14,7 +14,7 @@
  * Direct SDK packages used here (per https://ai-sdk.dev/providers):
  *   - @ai-sdk/openai      - OpenAI native models
  *   - @ai-sdk/anthropic   - Anthropic native models
- *   - @ai-sdk/google      - Google Generative AI (Gemini)
+ *   - @ai-sdk/google-vertex - Google Vertex AI (Gemini)
  *   - @ai-sdk/deepseek    - DeepSeek native API
  *   - @ai-sdk/mistral     - Mistral La Plateforme
  *   - @ai-sdk/groq        - Groq (hosts Meta Llama 4)
@@ -89,28 +89,15 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     directId: "claude-haiku-4-5",
   },
 
-  // Google -- direct via @ai-sdk/google
+  // Google -- direct via @ai-sdk/google-vertex
   {
-    id: "gemini-3.1-pro",
-    name: "Gemini 3.1 Pro",
+    id: "gemini-3.5-flash",
+    name: "Gemini 3.5 Flash",
     chef: "google",
-    gatewayId: "google/gemini-3.1-pro",
-    directId: "gemini-3.1-pro",
+    gatewayId: "google/gemini-3.5-flash",
+    directId: "gemini-3.5-flash",
   },
-  {
-    id: "gemini-3-flash",
-    name: "Gemini 3 Flash",
-    chef: "google",
-    gatewayId: "google/gemini-3-flash",
-    directId: "gemini-3-flash",
-  },
-  {
-    id: "gemini-3-deep-think",
-    name: "Gemini 3 Deep Think",
-    chef: "google",
-    gatewayId: "google/gemini-3-deep-think",
-    directId: "gemini-3-deep-think",
-  },
+
 
   // DeepSeek -- direct via @ai-sdk/deepseek
   {
@@ -178,7 +165,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
   },
 ];
 
-const DEFAULT_ENTRY = MODEL_REGISTRY[0]!;
+const DEFAULT_ENTRY = MODEL_REGISTRY.find((model) => model.id === "deepseek-v4-flash") ?? MODEL_REGISTRY[0]!;
 
 export function getModelEntry(id: string | null | undefined): ModelEntry {
   if (!id) {

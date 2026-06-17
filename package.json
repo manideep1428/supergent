@@ -1,5 +1,5 @@
 {
-  "name": "emergent",
+  "name": "supergent",
   "version": "0.0.1",
   "private": true,
   "scripts": {
@@ -24,5 +24,8 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "google-auth-library": "^10.6.2"
+  }
 }

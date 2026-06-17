@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { Sandbox } from "@vercel/sandbox";
 import { z } from "zod";
 
+export const dynamic = "force-dynamic";
+
 const fileParamsSchema = z.object({
   sandboxId: z.string(),
   path: z.string(),

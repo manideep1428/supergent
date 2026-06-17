@@ -1,7 +1,0 @@
-npm error Lifecycle script `dev` failed with error:
-npm error code 4294967295
-npm error path C:\Users\saima\OneDrive\Desktop\New folder\super\emergent\apps\web
-npm error workspace web@0.0.1
-npm error location C:\Users\saima\OneDrive\Desktop\New folder\super\emergent\apps\web
-npm error command failed
-npm error command C:\Windows\system32\cmd.exe /d /s /c next dev --turbopack --port 3002

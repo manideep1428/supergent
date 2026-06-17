@@ -3,14 +3,38 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
 // Pricing (matches the dashboard copy):
-//   1.00 credit  ->  300_000 input tokens
-//   1.00 credit  ->  100_000 output tokens
-const INPUT_CREDIT_PER_TOKEN = 1 / 300_000;
-const OUTPUT_CREDIT_PER_TOKEN = 1 / 100_000;
+//   0.50 credit  ->  Project creation
+//   1.00 credit  ->  20,000 output tokens (input tokens are free)
+const INPUT_CREDIT_PER_TOKEN = 0;
+const OUTPUT_CREDIT_PER_TOKEN = 1 / 20_000;
 
 // Initial free credits granted to every new user the first time they generate
 // usage. Bump this in code or grant top-ups via a future mutation.
 const INITIAL_CREDITS = 5;
+
+export async function chargeProjectCreation(db: any, userId: string) {
+  const now = Date.now();
+  const existing = await db
+    .query("userCredits")
+    .withIndex("by_userId", (q: any) => q.eq("userId", userId))
+    .unique();
+
+  if (!existing) {
+    await db.insert("userCredits", {
+      userId,
+      balance: INITIAL_CREDITS - 0.5,
+      lifetimeUsed: 0.5,
+      lifetimeIssued: INITIAL_CREDITS,
+      updatedAt: now,
+    });
+  } else {
+    await db.patch(existing._id, {
+      balance: existing.balance - 0.5,
+      lifetimeUsed: existing.lifetimeUsed + 0.5,
+      updatedAt: now,
+    });
+  }
+}
 
 function chargeFor(inputTokens: number, outputTokens: number) {
   const inputCredit = Math.max(0, inputTokens) * INPUT_CREDIT_PER_TOKEN;
@@ -80,6 +104,12 @@ export const recordUsage = mutation({
     const inputTokens = Math.max(0, Math.round(args.inputTokens));
     const outputTokens = Math.max(0, Math.round(args.outputTokens));
     const totalTokens = inputTokens + outputTokens;
+
+    const existing = await ctx.db
+      .query("userCredits")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .unique();
+
     const credits = chargeFor(inputTokens, outputTokens);
 
     const now = Date.now();
@@ -94,11 +124,6 @@ export const recordUsage = mutation({
       credits,
       createdAt: now,
     });
-
-    const existing = await ctx.db
-      .query("userCredits")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .unique();
 
     if (!existing) {
       await ctx.db.insert("userCredits", {
