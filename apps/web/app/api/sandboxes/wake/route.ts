@@ -135,7 +135,7 @@ export async function POST(req: Request) {
       console.log(`[wake] Starting dev server in background...`);
       await sandbox.runCommand({
         cmd: "pnpm",
-        args: ["dev"],
+        args: ["dev", "--", "--hostname", "0.0.0.0"],
         detached: true,
       });
 
@@ -164,7 +164,7 @@ export async function POST(req: Request) {
       console.log(`[wake] Restored from snapshot. Starting dev server and syncing...`);
       await sandbox.runCommand({
         cmd: "pnpm",
-        args: ["dev"],
+        args: ["dev", "--", "--hostname", "0.0.0.0"],
         detached: true,
       });
 

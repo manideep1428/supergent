@@ -49,8 +49,8 @@ import { toast } from "sonner"
 const STORAGE_KEY = "chat_position"
 const STORAGE_EVENT = "chatPositionChanged"
 
-// How often to ping the sandbox so Vercel doesn't auto-expire it (4 min)
-const SANDBOX_KEEPALIVE_MS = 4 * 60 * 1000
+// How often to ping the sandbox so Vercel doesn't auto-expire it (1 min)
+const SANDBOX_KEEPALIVE_MS = 1 * 60 * 1000
 // Grace period before sleeping when the tab goes to background (30 min)
 const SANDBOX_BG_GRACE_MS = 30 * 60 * 1000
 const STATUS_POLL_MS = 5_000
@@ -494,7 +494,7 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
   }, [sandboxStatus])
 
   // ── Keepalive ping: prevent Vercel from auto-expiring the sandbox ─────────
-  // Runs every 4 minutes while the tab is open and the sandbox is running.
+  // Runs every 1 minute while the tab is open and the sandbox is running.
   useEffect(() => {
     if (typeof window === "undefined") return
 
@@ -502,8 +502,11 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
       const status = sandboxStatusRef.current
       if (!status || status.status !== "running" || !status.sandboxId) return
       try {
-        // Refresh status — this is cheap and acts as the keepalive signal.
-        await fetchSandboxStatus()
+        await fetch("/api/sandboxes/keepalive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId: projectId }),
+        });
       } catch {
         // ignore
       }
@@ -511,7 +514,7 @@ export function ChatSessionShell({ projectId, user }: { projectId: string; user:
 
     const interval = window.setInterval(ping, SANDBOX_KEEPALIVE_MS)
     return () => window.clearInterval(interval)
-  }, [fetchSandboxStatus])
+  }, [projectId])
 
   // ── Tab visibility: wake on return, grace-sleep when backgrounded ─────────
   useEffect(() => {

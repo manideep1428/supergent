@@ -148,7 +148,7 @@ function errorMessage(error: unknown) {
   return String(error);
 }
 
-export const SANDBOX_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+export const SANDBOX_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 export const SNAPSHOT_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 async function reattachOrCreateSandbox({

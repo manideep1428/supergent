@@ -43,7 +43,7 @@ Use the sandbox workflow:
    * Install dependencies using:
      pnpm install
    * Wait for installation to complete before continuing.
-   * Note: On sandbox reactivation or reconnection, the system will automatically re-clone the starter repository, restore all custom files from the database, run pnpm install, start the dev server (pnpm dev), and expose port 3000.
+   * Note: On sandbox reactivation or reconnection, the system will automatically re-clone the starter repository, restore all custom files from the database, run pnpm install, start the dev server (pnpm dev -- --hostname 0.0.0.0), and expose port 3000.
 
 6. Add required dependencies only when necessary.
 
@@ -67,7 +67,7 @@ Use the sandbox workflow:
 9. If no dev server is running:
 
    * Run:
-     pnpm dev
+     pnpm dev -- --hostname 0.0.0.0
    * Start it in the background.
    * Use wait=false.
 
