@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import React, { useState, useEffect } from "react"
 import Link from "next/link"
 import { AppSidebar } from "@/components/app-sidebar"
 import { Badge } from "@workspace/ui/components/badge"
@@ -30,6 +30,7 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react"
+import { toast } from "sonner"
 
 type CheckoutPlan =
   | "trial"
@@ -69,10 +70,12 @@ const monthlyPlans: Plan[] = [
     price: "$0",
     period: "/month",
     badge: "Free",
+    detail: "2 free credits on signup",
     href: "/settings/keys",
     buttonText: "Use Starter",
     includedLabel: "Starter includes",
     features: [
+      "2 free credits on signup",
       "Bring your own API keys",
       "Chat with ads enabled",
       "Basic usage limits",
@@ -140,10 +143,12 @@ const annualPlans: Plan[] = [
     price: "$0",
     period: "/year",
     badge: "Free",
+    detail: "2 free credits on signup",
     href: "/settings/keys",
     buttonText: "Use Starter",
     includedLabel: "Starter includes",
     features: [
+      "2 free credits on signup",
       "Bring your own API keys",
       "Chat with ads enabled",
       "No recurring billing",
@@ -213,14 +218,21 @@ function PlanAction({ plan, isActive, balance }: { plan: Plan; isActive?: boolea
     )
   }
 
+  const handleUpgradeClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    toast.info("Coming soon!");
+  };
+
   return (
-    <form action="/api/polar/checkout" method="post" className="w-full">
-      <input type="hidden" name="plan" value={plan.checkoutPlan} />
-      <Button type="submit" className="w-full gap-2" variant={plan.featured ? "default" : "secondary"}>
-        {plan.buttonText}
-        <ArrowRight size={16} />
-      </Button>
-    </form>
+    <Button
+      type="button"
+      onClick={handleUpgradeClick}
+      className="w-full gap-2"
+      variant={plan.featured ? "default" : "secondary"}
+    >
+      {plan.buttonText}
+      <ArrowRight size={16} />
+    </Button>
   )
 }
 

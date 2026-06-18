@@ -26,7 +26,7 @@ export async function GET() {
 
   try {
     const [credits, recent] = await Promise.all([
-      convex.query(api.credits.getCredits, { userId: user.id }),
+      convex.mutation(api.credits.ensureCredits, { userId: user.id }),
       convex.query(api.credits.recentUsage, { userId: user.id, limit: 25 }),
     ]);
 

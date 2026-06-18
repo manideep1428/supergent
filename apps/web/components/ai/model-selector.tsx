@@ -220,14 +220,6 @@ const models = [
     providers: ["anthropic"],
   },
 
-  // Google
-  {
-    id: "gemini-3.5-flash",
-    name: "Gemini 3.5 Flash",
-    chef: "Google",
-    chefSlug: "google",
-    providers: ["google-vertex", "google"],
-  },
 
 
   // DeepSeek

@@ -17,6 +17,13 @@ export const { authKitEvent } = authKit.events({
       email: event.data.email,
       name: `${event.data.firstName} ${event.data.lastName}`,
     });
+    await ctx.db.insert("userCredits", {
+      userId: event.data.id,
+      balance: 2,
+      lifetimeUsed: 0,
+      lifetimeIssued: 2,
+      updatedAt: Date.now(),
+    });
   },
   "user.updated": async (ctx, event) => {
     const user = await ctx.db

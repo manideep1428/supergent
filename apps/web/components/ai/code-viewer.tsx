@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useRef } from "react"
 import type { BundledLanguage } from "shiki"
 
 const EXT_TO_LANG: Record<string, BundledLanguage> = {
@@ -80,6 +80,24 @@ export function CodeViewer({ path, content, loading, error }: Props) {
   const [highlighting, setHighlighting] = useState(false)
   const lineCount = useMemo(() => content.split("\n").length, [content])
 
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scrollPercent, setScrollPercent] = useState(0)
+
+  const handleScroll = () => {
+    const el = containerRef.current
+    if (!el) return
+    const maxScroll = el.scrollHeight - el.clientHeight
+    if (maxScroll <= 0) {
+      setScrollPercent(0)
+      return
+    }
+    setScrollPercent(el.scrollTop / maxScroll)
+  }
+
+  const minimapLines = useMemo(() => {
+    return content.split("\n").slice(0, 150)
+  }, [content])
+
   useEffect(() => {
     if (!content) {
       setHtml("")
@@ -119,7 +137,7 @@ export function CodeViewer({ path, content, loading, error }: Props) {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-zinc-500">
+      <div className="flex h-full items-center justify-center text-xs text-zinc-500 bg-[#1e1e1e]">
         Loading file...
       </div>
     )
@@ -127,7 +145,7 @@ export function CodeViewer({ path, content, loading, error }: Props) {
 
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center px-6 text-center text-xs text-red-400">
+      <div className="flex h-full items-center justify-center px-6 text-center text-xs text-red-400 bg-[#1e1e1e]">
         {error}
       </div>
     )
@@ -135,24 +153,22 @@ export function CodeViewer({ path, content, loading, error }: Props) {
 
   if (!content) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-zinc-500">
+      <div className="flex h-full items-center justify-center text-xs text-zinc-500 bg-[#1e1e1e]">
         Select a file to view its contents.
       </div>
     )
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#1e1e1e] text-[13px]">
-      <div className="flex shrink-0 items-center justify-between border-b border-white/10 bg-[#252526] px-3 py-2">
-        <span className="truncate font-mono text-xs text-zinc-300">{path}</span>
-        <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-zinc-500">
-          {lang}
-        </span>
-      </div>
-      <div className="relative flex min-h-0 flex-1 overflow-auto font-mono leading-[1.55]">
+    <div className="flex h-full min-h-0 flex-row bg-[#1e1e1e] text-[13px] relative overflow-hidden">
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 flex min-h-0 overflow-auto font-mono leading-[1.55] relative pr-16 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent"
+      >
         <div
           aria-hidden
-          className="sticky left-0 shrink-0 select-none border-r border-white/5 bg-[#1e1e1e] px-3 py-3 text-right text-zinc-600"
+          className="sticky left-0 shrink-0 select-none border-r border-white/5 bg-[#1e1e1e] px-3 py-3 text-right text-zinc-600 z-[5]"
         >
           {Array.from({ length: lineCount }, (_, i) => (
             <div key={i}>{i + 1}</div>
@@ -163,10 +179,28 @@ export function CodeViewer({ path, content, loading, error }: Props) {
           dangerouslySetInnerHTML={{ __html: html }}
         />
         {highlighting ? (
-          <div className="pointer-events-none absolute right-3 top-2 text-[10px] uppercase tracking-wide text-zinc-600">
+          <div className="pointer-events-none absolute right-20 top-2 text-[10px] uppercase tracking-wide text-zinc-600 z-[5]">
             highlighting…
           </div>
         ) : null}
+      </div>
+
+      {/* Mock Minimap */}
+      <div className="absolute right-0 top-0 bottom-0 w-16 bg-[#1e1e1e]/90 border-l border-white/5 select-none text-[2px] leading-[3px] font-mono text-zinc-600/40 overflow-hidden py-1 px-1 pointer-events-none hidden md:block z-10">
+        <div
+          className="absolute left-0 right-0 bg-white/[0.04] border border-white/10 rounded transition-all duration-75"
+          style={{
+            top: `${scrollPercent * 80}%`,
+            height: "18%",
+          }}
+        />
+        <div className="h-full overflow-hidden select-none pr-1 opacity-70">
+          {minimapLines.map((line, idx) => (
+            <div key={idx} className="truncate whitespace-pre leading-none h-[4px]">
+              {line.replace(/\s/g, "\u00a0")}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

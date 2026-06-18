@@ -26,6 +26,8 @@
     "packages/*"
   ],
   "dependencies": {
-    "google-auth-library": "^10.6.2"
+    "@ai-sdk/google-vertex": "^4.0.146",
+    "google-auth-library": "^10.6.2",
+    "tiktoken": "^1.0.22"
   }
 }

@@ -77,7 +77,7 @@ function buildTree(paths: string[]): TreeNode[] {
   return root.children
 }
 
-function getFileIcon(name: string): { Icon: LucideIcon; color: string } {
+export function getFileIcon(name: string): { Icon: LucideIcon; color: string } {
   const lower = name.toLowerCase()
 
   if (lower === "package.json" || lower === "package-lock.json") {
@@ -263,29 +263,46 @@ function TreeRow({
   onToggle: (path: string) => void
   selectedPath: string | null
 }) {
+  const indentGuides = Array.from({ length: depth }, (_, i) => (
+    <div
+      key={i}
+      className="absolute bottom-0 top-0 w-px bg-white/[0.06] pointer-events-none"
+      style={{ left: ROW_PADDING_LEFT + i * INDENT_PX + 7 }}
+    />
+  ))
+
   if (node.type === "folder") {
     const isOpen = expanded.has(node.path)
+    const isActiveFolder = selectedPath?.startsWith(node.path + "/")
     return (
       <>
-        <button
-          className="flex w-full items-center gap-1 px-2 py-1 text-left font-mono text-xs text-zinc-300 hover:bg-[#2a2d2e]"
-          onClick={() => onToggle(node.path)}
-          style={{ paddingLeft: ROW_PADDING_LEFT + depth * INDENT_PX }}
-          title={node.path}
-          type="button"
-        >
-          {isOpen ? (
-            <ChevronDownIcon className="size-3.5 shrink-0 text-zinc-500" />
-          ) : (
-            <ChevronRightIcon className="size-3.5 shrink-0 text-zinc-500" />
-          )}
-          {isOpen ? (
-            <FolderOpenIcon className="size-3.5 shrink-0 text-amber-300" />
-          ) : (
-            <FolderIcon className="size-3.5 shrink-0 text-amber-300" />
-          )}
-          <span className="truncate">{node.name}</span>
-        </button>
+        <div className="relative w-full">
+          {indentGuides}
+          <button
+            className={cn(
+              "flex w-full items-center gap-1.5 px-2 py-1 text-left font-mono text-xs transition-colors duration-150 relative",
+              isActiveFolder
+                ? "text-zinc-100 hover:bg-[#2a2d2e]"
+                : "text-zinc-400 hover:bg-[#2a2d2e] hover:text-zinc-200"
+            )}
+            onClick={() => onToggle(node.path)}
+            style={{ paddingLeft: ROW_PADDING_LEFT + depth * INDENT_PX }}
+            title={node.path}
+            type="button"
+          >
+            {isOpen ? (
+              <ChevronDownIcon className="size-3.5 shrink-0 text-zinc-500" />
+            ) : (
+              <ChevronRightIcon className="size-3.5 shrink-0 text-zinc-500" />
+            )}
+            {isOpen ? (
+              <FolderOpenIcon className="size-3.5 shrink-0 text-amber-300/90" />
+            ) : (
+              <FolderIcon className="size-3.5 shrink-0 text-amber-300/90" />
+            )}
+            <span className="truncate">{node.name}</span>
+          </button>
+        </div>
         {isOpen
           ? node.children.map((child) => (
               <TreeRow
@@ -310,20 +327,23 @@ function TreeRow({
   const paddingLeft = ROW_PADDING_LEFT + depth * INDENT_PX + INDENT_PX + 4
 
   return (
-    <button
-      className={cn(
-        "flex w-full items-center gap-1.5 px-2 py-1 text-left font-mono text-xs",
-        isActive
-          ? "bg-[#37373d] text-white"
-          : "text-zinc-400 hover:bg-[#2a2d2e] hover:text-zinc-100",
-      )}
-      onClick={() => onSelect(node.path)}
-      style={{ paddingLeft }}
-      title={node.path}
-      type="button"
-    >
-      <Icon className={cn("size-3.5 shrink-0", color)} />
-      <span className="truncate">{node.name}</span>
-    </button>
+    <div className="relative w-full">
+      {indentGuides}
+      <button
+        className={cn(
+          "flex w-full items-center gap-1.5 px-2 py-1 text-left font-mono text-xs relative transition-colors duration-150",
+          isActive
+            ? "bg-[#37373d] text-white border-l-2 border-[#007acc] pl-[calc(var(--padding-left)-2px)]"
+            : "text-zinc-400 hover:bg-[#2a2d2e] hover:text-zinc-100",
+        )}
+        onClick={() => onSelect(node.path)}
+        style={{ paddingLeft } as React.CSSProperties}
+        title={node.path}
+        type="button"
+      >
+        <Icon className={cn("size-3.5 shrink-0", color)} />
+        <span className="truncate">{node.name}</span>
+      </button>
+    </div>
   )
 }

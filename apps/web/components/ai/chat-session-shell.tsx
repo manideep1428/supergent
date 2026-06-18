@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react"
 import Link from "next/link"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
@@ -11,6 +11,7 @@ import { Button } from "@workspace/ui/components/button"
 import { Separator } from "@workspace/ui/components/separator"
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   Code2Icon,
   Coins,
   DatabaseIcon,
@@ -24,10 +25,18 @@ import {
   StarIcon,
   TerminalIcon,
   Trash2Icon,
+  Files as FilesIcon,
+  Search as SearchIcon,
+  GitBranch as GitBranchIcon,
+  Play as PlayIcon,
+  Blocks as BlocksIcon,
+  User as UserIcon,
+  X as XIcon,
+  Settings as SettingsIcon,
 } from "lucide-react"
 import ChatbotDemo from "@/components/ai/chat-page"
 import { CodeViewer } from "@/components/ai/code-viewer"
-import { FileExplorer } from "@/components/ai/file-explorer"
+import { FileExplorer, getFileIcon } from "@/components/ai/file-explorer"
 import { UserMenu } from "@/components/user-menu"
 import {
   DropdownMenu,
@@ -133,17 +142,41 @@ function FilesView({ app }: { app: AppRuntime | null }) {
   const [contentLoading, setContentLoading] = useState(false)
   const [contentError, setContentError] = useState<string | null>(null)
 
-  // Auto-select the first file the moment it shows up (and re-select if the
-  // currently selected file disappears from the generated list).
+  // VS Code style tab and sidebar state
+  const [openTabs, setOpenTabs] = useState<string[]>([])
+  const [sidebarExpanded, setSidebarExpanded] = useState(true)
+  const [activeSidebarTab, setActiveSidebarTab] = useState<"explorer" | "search" | "git" | "debug" | "extensions">("explorer")
+  const [openEditorsCollapsed, setOpenEditorsCollapsed] = useState(false)
+  const [projectFilesCollapsed, setProjectFilesCollapsed] = useState(false)
+
+  // Filter open tabs to keep only those that still exist.
+  // Auto-select the first file when it shows up.
   useEffect(() => {
     if (files.length === 0) {
       setSelectedPath(null)
+      setOpenTabs([])
       return
     }
+
+    setOpenTabs((prev) => {
+      const valid = prev.filter((t) => files.includes(t))
+      if (valid.length === 0 && files[0]) {
+        return [files[0]]
+      }
+      return valid
+    })
+
     if (!selectedPath || !files.includes(selectedPath)) {
       setSelectedPath(files[0] ?? null)
     }
   }, [files, selectedPath])
+
+  // Sync openTabs whenever selectedPath changes (ensure selectedPath is in tabs)
+  useEffect(() => {
+    if (selectedPath && !openTabs.includes(selectedPath)) {
+      setOpenTabs((prev) => [...prev, selectedPath])
+    }
+  }, [selectedPath, openTabs])
 
   useEffect(() => {
     if (!selectedPath || !sandboxId) {
@@ -159,31 +192,44 @@ function FilesView({ app }: { app: AppRuntime | null }) {
 
     const url = `/api/sandboxes/${sandboxId}/files?path=${encodeURIComponent(selectedPath)}`
 
-      ; (async () => {
-        try {
-          const response = await fetch(url, { cache: "no-store" })
-          if (!response.ok) {
-            throw new Error(`Could not read ${selectedPath} (HTTP ${response.status})`)
-          }
-          const text = await response.text()
-          if (!cancelled) setContent(text)
-        } catch (error: any) {
-          if (!cancelled) setContentError(error?.message || "Failed to load file")
-        } finally {
-          if (!cancelled) setContentLoading(false)
+    ;(async () => {
+      try {
+        const response = await fetch(url, { cache: "no-store" })
+        if (!response.ok) {
+          throw new Error(`Could not read ${selectedPath} (HTTP ${response.status})`)
         }
-      })()
+        const text = await response.text()
+        if (!cancelled) setContent(text)
+      } catch (error: any) {
+        if (!cancelled) setContentError(error?.message || "Failed to load file")
+      } finally {
+        if (!cancelled) setContentLoading(false)
+      }
+    })()
 
     return () => {
       cancelled = true
     }
   }, [selectedPath, sandboxId])
 
+  const handleSelectFile = (path: string) => {
+    setSelectedPath(path)
+  }
+
+  const handleCloseTab = (path: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const nextTabs = openTabs.filter((t) => t !== path)
+    setOpenTabs(nextTabs)
+    if (selectedPath === path) {
+      setSelectedPath(nextTabs[nextTabs.length - 1] ?? null)
+    }
+  }
+
   if (files.length === 0) {
     return (
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="min-h-0 flex-1 overflow-auto p-4 bg-[#1e1e1e]">
         <div className="mx-auto w-full max-w-3xl">
-          <div className="rounded-lg border border-dashed border-white/10 p-10 text-center text-sm text-zinc-500">
+          <div className="rounded-lg border border-dashed border-white/10 p-10 text-center text-sm text-zinc-500 bg-[#252526]/50">
             No files have been generated yet. Ask the agent to scaffold an app and the generated
             files will appear here in a VS Code-style viewer.
           </div>
@@ -192,34 +238,339 @@ function FilesView({ app }: { app: AppRuntime | null }) {
     )
   }
 
+  // Helper to parse filename from path
+  const getFileName = (path: string) => {
+    return path.split(/[\\/]+/).pop() ?? path
+  }
+
+  // Breadcrumbs data
+  const breadcrumbs = selectedPath ? selectedPath.split("/") : []
+  const activeLang = selectedPath ? selectedPath.split(".").pop() ?? "text" : "text"
+
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
-      <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-white/10 bg-[#252526]">
-        <div className="shrink-0 border-b border-white/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-          Explorer
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          <FileExplorer
-            files={files}
-            onSelect={(path) => setSelectedPath(path)}
-            selectedPath={selectedPath}
-          />
-        </div>
-      </aside>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {selectedPath ? (
-          <CodeViewer
-            content={content}
-            error={contentError}
-            loading={contentLoading}
-            path={selectedPath}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-xs text-zinc-500">
-            Select a file from the explorer.
+    <div className="flex flex-col flex-1 min-h-0 bg-[#1e1e1e] select-none text-zinc-300">
+      {/* Main Workspace Row */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* 1. Activity Bar */}
+        <aside className="w-12 shrink-0 bg-[#181818] border-r border-white/5 flex flex-col items-center py-2 justify-between z-10">
+          <div className="flex flex-col gap-1 w-full items-center">
+            {[
+              { id: "explorer", icon: FilesIcon, label: "Explorer" },
+              { id: "search", icon: SearchIcon, label: "Search" },
+              { id: "git", icon: GitBranchIcon, label: "Source Control" },
+              { id: "debug", icon: PlayIcon, label: "Run & Debug" },
+              { id: "extensions", icon: BlocksIcon, label: "Extensions" },
+            ].map((tab) => {
+              const Icon = tab.icon
+              const isTabActive = activeSidebarTab === tab.id && sidebarExpanded
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    if (activeSidebarTab === tab.id) {
+                      setSidebarExpanded(!sidebarExpanded)
+                    } else {
+                      setActiveSidebarTab(tab.id as any)
+                      setSidebarExpanded(true)
+                    }
+                  }}
+                  title={tab.label}
+                  className="w-full h-12 flex items-center justify-center relative transition-colors group"
+                >
+                  {/* Left Indicator Bar */}
+                  {isTabActive ? (
+                    <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-[#007acc]" />
+                  ) : null}
+                  <Icon
+                    className={`size-6 transition-colors duration-150 ${
+                      isTabActive
+                        ? "text-white"
+                        : "text-zinc-500 group-hover:text-zinc-300"
+                    }`}
+                  />
+                </button>
+              )
+            })}
           </div>
-        )}
+
+          <div className="flex flex-col gap-2 w-full items-center">
+            <button title="Account" className="w-full h-10 flex items-center justify-center text-zinc-500 hover:text-zinc-300">
+              <UserIcon className="size-5" />
+            </button>
+            <button title="Settings" className="w-full h-10 flex items-center justify-center text-zinc-500 hover:text-zinc-300">
+              <SettingsIcon className="size-5" />
+            </button>
+          </div>
+        </aside>
+
+        {/* 2. Sidebar Panel */}
+        {sidebarExpanded ? (
+          <aside className="w-56 shrink-0 bg-[#252526] border-r border-white/5 flex flex-col overflow-hidden z-10">
+            {/* Sidebar Title */}
+            <div className="shrink-0 h-9 px-3 flex items-center justify-between border-b border-white/5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+                {activeSidebarTab === "explorer"
+                  ? "Explorer: Workspace"
+                  : activeSidebarTab === "search"
+                    ? "Search"
+                    : activeSidebarTab === "git"
+                      ? "Source Control"
+                      : activeSidebarTab === "debug"
+                        ? "Run and Debug"
+                        : "Extensions"}
+              </span>
+            </div>
+
+            {/* Sidebar Content */}
+            {activeSidebarTab === "explorer" ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-auto text-xs">
+                {/* Section A: Open Editors */}
+                <div className="flex flex-col shrink-0">
+                  <button
+                    onClick={() => setOpenEditorsCollapsed(!openEditorsCollapsed)}
+                    className="h-[22px] px-1 bg-white/[0.02] border-b border-white/[0.04] flex items-center gap-1 w-full text-left font-semibold text-[10px] uppercase tracking-wide text-zinc-400 hover:text-zinc-200"
+                  >
+                    {openEditorsCollapsed ? (
+                      <ChevronRightIcon className="size-3 text-zinc-500" />
+                    ) : (
+                      <ChevronDownIcon className="size-3 text-zinc-500" />
+                    )}
+                    Open Editors
+                  </button>
+                  {!openEditorsCollapsed && (
+                    <div className="py-1 flex flex-col max-h-[160px] overflow-y-auto">
+                      {openTabs.map((tabPath) => {
+                        const tabName = getFileName(tabPath)
+                        const { Icon, color } = getFileIcon(tabName)
+                        const isTabSelected = selectedPath === tabPath
+                        return (
+                          <div
+                            key={tabPath}
+                            onClick={() => handleSelectFile(tabPath)}
+                            className={`flex items-center justify-between px-3 py-1 cursor-pointer font-mono hover:bg-[#2a2d2e] relative group ${
+                              isTabSelected ? "bg-[#37373d] text-white" : "text-zinc-400"
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 truncate">
+                              <Icon className={`size-3.5 shrink-0 ${color}`} />
+                              <span className="truncate">{tabName}</span>
+                            </div>
+                            <button
+                              onClick={(e) => handleCloseTab(tabPath, e)}
+                              className="opacity-0 group-hover:opacity-100 hover:bg-white/10 rounded-sm p-0.5 transition-opacity duration-150"
+                            >
+                              <XIcon className="size-3 text-zinc-400" />
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Section B: Project Files */}
+                <div className="flex flex-col flex-1 min-h-0 border-t border-white/5">
+                  <button
+                    onClick={() => setProjectFilesCollapsed(!projectFilesCollapsed)}
+                    className="h-[22px] px-1 bg-white/[0.02] border-b border-white/[0.04] flex items-center gap-1 w-full text-left font-semibold text-[10px] uppercase tracking-wide text-zinc-400 hover:text-zinc-200"
+                  >
+                    {projectFilesCollapsed ? (
+                      <ChevronRightIcon className="size-3 text-zinc-500" />
+                    ) : (
+                      <ChevronDownIcon className="size-3 text-zinc-500" />
+                    )}
+                    Files
+                  </button>
+                  {!projectFilesCollapsed && (
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      <FileExplorer
+                        files={files}
+                        onSelect={handleSelectFile}
+                        selectedPath={selectedPath}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 text-xs text-zinc-500 text-center">
+                This panel is simplified for preview. Check the files list under the Explorer tab.
+              </div>
+            )}
+          </aside>
+        ) : null}
+
+        {/* 3. Editor Pane (Tabs, Breadcrumbs, CodeViewer) */}
+        <div className="flex-grow flex flex-col min-w-0 bg-[#1e1e1e] relative">
+          {selectedPath ? (
+            <>
+              {/* VS Code Tab Bar */}
+              <div className="h-[35px] bg-[#252526] border-b border-white/5 flex items-center justify-between overflow-hidden shrink-0">
+                <div className="flex flex-1 items-center h-full overflow-x-auto scrollbar-none scroll-smooth">
+                  {openTabs.map((tabPath) => {
+                    const tabName = getFileName(tabPath)
+                    const { Icon, color } = getFileIcon(tabName)
+                    const isTabSelected = selectedPath === tabPath
+                    return (
+                      <div
+                        key={tabPath}
+                        onClick={() => handleSelectFile(tabPath)}
+                        className={`h-full flex items-center gap-2 px-3 border-r border-white/5 cursor-pointer font-mono text-xs relative group transition-colors duration-150 shrink-0 ${
+                          isTabSelected
+                            ? "bg-[#1e1e1e] text-white border-t-[2px] border-t-[#007acc] h-full"
+                            : "bg-[#2d2d2d] text-zinc-400 hover:bg-[#2b2b2b] hover:text-zinc-200"
+                        }`}
+                      >
+                        <Icon className={`size-3.5 shrink-0 ${color}`} />
+                        <span className="truncate max-w-[120px]">{tabName}</span>
+                        <button
+                          onClick={(e) => handleCloseTab(tabPath, e)}
+                          className="opacity-0 group-hover:opacity-100 hover:bg-white/10 rounded-sm p-0.5 transition-all"
+                        >
+                          <XIcon className="size-3 text-zinc-400" />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Right side tab icons */}
+                <div className="flex items-center gap-1.5 px-3 border-l border-white/5 h-full text-zinc-400 shrink-0 bg-[#252526]">
+                  <button title="Split Editor Right" className="hover:text-zinc-200 p-1">
+                    <svg className="size-3.5" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M1 2v12h14V2H1zm13 1v10H8.5V3H14zM7.5 13H2V3h5.5v10z"/>
+                    </svg>
+                  </button>
+                  <button title="More Actions" className="hover:text-zinc-200 p-1">
+                    <MoreHorizontalIcon className="size-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* VS Code Breadcrumbs */}
+              <div className="h-[22px] bg-[#1e1e1e] border-b border-white/[0.04] px-4 flex items-center gap-1.5 text-[11px] text-zinc-500 font-mono shrink-0">
+                <span className="hover:text-zinc-300 cursor-pointer">workspace</span>
+                {breadcrumbs.map((segment, index) => {
+                  const isLast = index === breadcrumbs.length - 1
+                  return (
+                    <Fragment key={index}>
+                      <ChevronRightIcon className="size-3 shrink-0 text-zinc-600" />
+                      {isLast ? (
+                        <div className="flex items-center gap-1 text-zinc-300">
+                          {(() => {
+                            const { Icon, color } = getFileIcon(segment)
+                            return <Icon className={`size-3 shrink-0 ${color}`} />
+                          })()}
+                          <span className="hover:text-zinc-100 cursor-pointer font-semibold">{segment}</span>
+                        </div>
+                      ) : (
+                        <span className="hover:text-zinc-300 cursor-pointer">{segment}</span>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </div>
+
+              {/* Main Code View Area */}
+              <div className="flex-1 min-h-0">
+                <CodeViewer
+                  content={content}
+                  error={contentError}
+                  loading={contentLoading}
+                  path={selectedPath}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col h-full items-center justify-center text-xs text-zinc-500 gap-2 bg-[#1e1e1e]">
+              <svg className="size-12 opacity-20" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M9 1H2v14h12V6L9 1zm4 13H3V2h5.5l4.5 4.5V14z"/>
+              </svg>
+              <span>Select a file from the explorer to begin viewing code.</span>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* 4. VS Code Status Bar */}
+      <footer className="h-[22px] shrink-0 bg-[#007acc] text-white flex items-center justify-between px-2 text-[11px] font-sans font-normal overflow-hidden select-none z-20">
+        <div className="flex items-center gap-3 h-full">
+          {/* Remote Container Badge */}
+          <div className="bg-[#167c50] hover:bg-[#1f9362] cursor-pointer h-full px-2.5 flex items-center gap-1 transition-colors duration-150">
+            <svg className="size-3" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M5.5 2L1 6.5l4.5 4.5v-3H9v-3H5.5V2zm5 12l4.5-4.5-4.5-4.5v3H7v3h3.5v3z"/>
+            </svg>
+            <span className="font-semibold">Sandbox: {sandboxId ? sandboxId.slice(0, 8) : "offline"}</span>
+          </div>
+
+          {/* Git Branch */}
+          <div className="flex items-center gap-1 hover:bg-white/10 cursor-pointer h-full px-1.5 transition-colors duration-150">
+            <GitBranchIcon className="size-3 shrink-0" />
+            <span>main</span>
+            <svg className="size-2.5 opacity-80" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M14 7.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm-7-4a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM1.5 10a1.5 1.5 0 1 0 3 0 1.5 1.5 0 0 0-3 0zm6.5 1.5c-1.38 0-2.5-1.12-2.5-2.5v-.5A1.5 1.5 0 0 1 4 7H2a.5.5 0 0 1 0-1h2c1.38 0 2.5 1.12 2.5 2.5v.5A1.5 1.5 0 0 1 8 10h2a.5.5 0 0 1 0 1H8v.5z"/>
+            </svg>
+          </div>
+
+          {/* Sync status */}
+          <div className="flex items-center gap-1 hover:bg-white/10 cursor-pointer h-full px-1.5 transition-colors duration-150" title="Synchronized">
+            <svg className="size-3" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+              <path d="M8 4.5a.5.5 0 0 1-.5-.5V1a.5.5 0 0 1 1 0v3a.5.5 0 0 1-.5.5z"/>
+            </svg>
+          </div>
+
+          {/* Problems Indicator */}
+          <div className="flex items-center gap-1 hover:bg-white/10 cursor-pointer h-full px-1.5 transition-colors duration-150">
+            <svg className="size-3" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0-1A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM7 4h2v5H7V4zm0 6h2v2H7v-2z"/>
+            </svg>
+            <span>0</span>
+            <svg className="size-3" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M7.002 1.25a.75.75 0 0 1 1.38-.02l6.25 11.25A.75.75 0 0 1 13.973 13.5H1.41a.75.75 0 0 1-.659-1.077l6.25-11.173zM2.518 12h10.347L7.691 3.518 2.518 12zM7 6h2v3H7V6zm0 4h2v2H7v-2z"/>
+            </svg>
+            <span>0</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 h-full">
+          {/* Cursor info */}
+          <span className="hover:bg-white/10 px-1.5 py-0.5 rounded cursor-pointer transition-colors duration-150">
+            Ln 1, Col 1
+          </span>
+          {/* Indentation */}
+          <span className="hover:bg-white/10 px-1.5 py-0.5 rounded cursor-pointer transition-colors duration-150">
+            Spaces: 2
+          </span>
+          {/* Encoding */}
+          <span className="hover:bg-white/10 px-1.5 py-0.5 rounded cursor-pointer transition-colors duration-150">
+            UTF-8
+          </span>
+          {/* EOL */}
+          <span className="hover:bg-white/10 px-1.5 py-0.5 rounded cursor-pointer transition-colors duration-150">
+            LF
+          </span>
+          {/* Language Mode */}
+          <span className="hover:bg-white/10 px-1.5 py-0.5 rounded cursor-pointer transition-colors duration-150 font-medium">
+            {activeLang === "tsx"
+              ? "TypeScript JSX"
+              : activeLang === "ts"
+                ? "TypeScript"
+                : activeLang === "jsx"
+                  ? "JavaScript JSX"
+                  : activeLang === "js"
+                    ? "JavaScript"
+                    : activeLang.toUpperCase()}
+          </span>
+          {/* Prettier Badge */}
+          <span className="hover:bg-white/10 px-2 py-0.5 flex items-center gap-1 cursor-pointer transition-colors duration-150 text-[10px]">
+            <svg className="size-2.5 text-[#51ff00]" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-5.446z"/>
+            </svg>
+            Prettier
+          </span>
+        </div>
+      </footer>
     </div>
   )
 }

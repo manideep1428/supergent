@@ -89,14 +89,14 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     directId: "claude-haiku-4-5",
   },
 
-  // Google -- direct via @ai-sdk/google-vertex
-  {
-    id: "gemini-3.5-flash",
-    name: "Gemini 3.5 Flash",
-    chef: "google",
-    gatewayId: "google/gemini-3.5-flash",
-    directId: "gemini-3.5-flash",
-  },
+  // // Google -- direct via @ai-sdk/google-vertex
+  // {
+  //   id: "gemini-3.5-flash",
+  //   name: "Gemini 3.5 Flash",
+  //   chef: "google",
+  //   gatewayId: "google/gemini-3.5-flash",
+  //   directId: "gemini-3.5-flash",
+  // },
 
 
   // DeepSeek -- direct via @ai-sdk/deepseek

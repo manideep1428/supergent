@@ -10,7 +10,7 @@ const OUTPUT_CREDIT_PER_TOKEN = 1 / 20_000;
 
 // Initial free credits granted to every new user the first time they generate
 // usage. Bump this in code or grant top-ups via a future mutation.
-const INITIAL_CREDITS = 5;
+const INITIAL_CREDITS = 2;
 
 export async function chargeProjectCreation(db: any, userId: string) {
   const now = Date.now();
@@ -63,6 +63,40 @@ export const getCredits = query({
       balance: row.balance,
       lifetimeUsed: row.lifetimeUsed,
       lifetimeIssued: row.lifetimeIssued,
+      initialized: true,
+    };
+  },
+});
+
+export const ensureCredits = mutation({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("userCredits")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .unique();
+
+    if (!existing) {
+      const now = Date.now();
+      await ctx.db.insert("userCredits", {
+        userId: args.userId,
+        balance: INITIAL_CREDITS,
+        lifetimeUsed: 0,
+        lifetimeIssued: INITIAL_CREDITS,
+        updatedAt: now,
+      });
+      return {
+        balance: INITIAL_CREDITS,
+        lifetimeUsed: 0,
+        lifetimeIssued: INITIAL_CREDITS,
+        initialized: true,
+      };
+    }
+
+    return {
+      balance: existing.balance,
+      lifetimeUsed: existing.lifetimeUsed,
+      lifetimeIssued: existing.lifetimeIssued,
       initialized: true,
     };
   },
